@@ -1,0 +1,44 @@
+{
+  "name": "@kafka-hub/kafka-cli",
+  "version": "0.1.0",
+  "description": "Command-line companion for kafka-hub. Lint Kafka .properties files locally with the same rules used on kafka-hub.dev/diagnose.",
+  "license": "MIT",
+  "author": "Jose David Baena <josedab@gmail.com>",
+  "type": "module",
+  "bin": {
+    "kafka-hub": "./bin/kafka-hub.mjs"
+  },
+  "main": "./dist/cli.js",
+  "types": "./dist/cli.d.ts",
+  "files": [
+    "dist",
+    "bin",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "esbuild src/cli.ts --bundle --platform=node --format=esm --target=node18 --outfile=dist/cli.js --sourcemap && tsc -p tsconfig.json",
+    "diagnose": "node ./bin/kafka-hub.mjs diagnose",
+    "test": "tsx --test src/*.test.ts",
+    "prepack": "pnpm build"
+  },
+  "devDependencies": {
+    "@kafka-hub/kafka-diagnose": "workspace:*",
+    "esbuild": "^0.28.0",
+    "tsx": "^4.19.2"
+  },
+  "keywords": [
+    "kafka",
+    "cli",
+    "diagnostics",
+    "config",
+    "linter"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/josedab/kafka-hub.git",
+    "directory": "packages/kafka-cli"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

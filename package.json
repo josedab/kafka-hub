@@ -2,16 +2,37 @@
   "name": "kafka-hub",
   "version": "0.1.0",
   "private": true,
+  "packageManager": "pnpm@11.13.0",
+  "engines": {
+    "node": ">=22.0.0"
+  },
   "scripts": {
+    "predev": "fumadocs-mdx",
     "dev": "next dev",
+    "prebuild": "fumadocs-mdx",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint --cache --cache-location .eslintcache",
+    "test": "pnpm test:unit && pnpm --filter @kafka-hub/kafka-diagnose test && pnpm --filter @kafka-hub/kafka-sim test && pnpm --filter @kafka-hub/kafka-cli test",
+    "test:unit": "tsx --test lib/*.test.ts app/api/diagnose/llm/route.test.ts",
+    "postinstall": "fumadocs-mdx"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.98.0",
+    "@kafka-hub/kafka-diagnose": "workspace:*",
+    "@kafka-hub/kafka-sim": "workspace:*",
+    "@types/mdx": "^2.0.13",
+    "clsx": "^2.1.1",
+    "fumadocs-core": "^16.9.1",
+    "fumadocs-mdx": "^15.0.8",
+    "fumadocs-ui": "^16.9.1",
+    "lucide-react": "^1.16.0",
     "next": "16.2.6",
     "react": "19.2.4",
-    "react-dom": "19.2.4"
+    "react-dom": "19.2.4",
+    "tailwind-merge": "^3.6.0",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
@@ -21,6 +42,7 @@
     "eslint": "^9",
     "eslint-config-next": "16.2.6",
     "tailwindcss": "^4",
+    "tsx": "^4.19.2",
     "typescript": "^5"
   }
 }

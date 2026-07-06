@@ -1,0 +1,25 @@
+import { defineDocs, defineConfig, frontmatterSchema } from "fumadocs-mdx/config";
+import { z } from "zod";
+
+export const learn = defineDocs({
+  dir: "content/learn",
+  docs: {
+    schema: frontmatterSchema.extend({
+      date: z.string().optional(),
+      scenarios: z.array(z.string()).optional(),
+      tags: z.array(z.string()).optional(),
+    }),
+  },
+});
+
+export const runbooks = defineDocs({
+  dir: "content/runbooks",
+  docs: {
+    schema: frontmatterSchema.extend({
+      date: z.string().optional(),
+      tags: z.array(z.string()).optional(),
+    }),
+  },
+});
+
+export default defineConfig();

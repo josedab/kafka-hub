@@ -1,0 +1,110 @@
+---
+title: Log compaction internals
+description: How Kafka maintains the latest value per key forever — the LogCleaner, tombstones, dirty ratio, and the gotchas in compacted topics.
+date: "2026-05-25"
+---
+
+A regular Kafka topic deletes old segments by **time** or **size**. A
+**compacted** topic keeps the *latest* value for every key, forever, while
+still deleting superseded values. This is what makes topics like
+`__consumer_offsets`, `__transaction_state`, and KTable changelogs work.
+
+The mental model is straightforward; the operational details bite.
+
+## What compaction actually deletes
+
+Set `cleanup.policy=compact`. The broker runs a background process — the
+**LogCleaner** — that walks the topic's log and rewrites segments such that:
+
+1. For every key, only the **most recent** record survives.
+2. A record with `value=null` (a **tombstone**) marks the key for deletion.
+   The tombstone itself is kept for `delete.retention.ms` (default 24h) so
+   that downstream compacted-topic consumers see the delete, then it too is
+   compacted away.
+3. The **active segment** (the one currently being written) is never
+   touched. Compaction only ever operates on already-rolled segments.
+
+Step through it below.
+
+<CompactionTimeline />
+
+## When does it run?
+
+The LogCleaner picks topics-partitions to clean based on the
+**dirty ratio**: the fraction of the log that is *not* the latest value per
+key. A topic-partition is cleanable when:
+
+- `dirtyRatio > min.cleanable.dirty.ratio` (default 0.5), AND
+- enough time has passed since the last clean
+  (`min.compaction.lag.ms`), AND
+- there is enough log behind the active segment (governed by
+  `segment.bytes` and `segment.ms`).
+
+Tune `min.cleanable.dirty.ratio` toward 0 to compact aggressively (more
+CPU + IO) or toward 1 to compact lazily (older values linger).
+
+## The active segment is never touched
+
+This is the single most common source of "why is my compacted topic
+huge?" tickets. Records sitting in the active segment are exempt. If the
+segment never rolls — because the topic has low throughput and you've left
+`segment.ms` at the 7-day default — compaction will never run.
+
+**Fix**: for low-volume compacted topics like state stores, set
+`segment.ms` to something like 6 hours and `segment.bytes` to something
+small like 100 MB so segments actually roll.
+
+## Compaction + retention
+
+A topic can be both compacted **and** time-bounded. Set
+`cleanup.policy=compact,delete` and configure `retention.ms`. The semantics:
+
+- Records older than `retention.ms` are deleted by the delete cleaner.
+- Among records that remain, compaction keeps the latest per key.
+
+This is useful when you want "latest value per user, but anything older
+than 30 days vanishes regardless of whether it's the latest".
+
+## Tombstones and consumers
+
+A consumer reading a compacted topic from offset 0 sees the tombstones
+exactly once. If they unsubscribe and resubscribe after
+`delete.retention.ms`, they may see no record for that key at all — neither
+the tombstone nor any prior value. Compacted-topic consumers that build
+in-memory state must be **idempotent under the "missing key" case** and not
+assume a tombstone will arrive to clean up a stale entry.
+
+## Common compacted topics
+
+| Topic                       | What lives there                                  |
+| --------------------------- | ------------------------------------------------- |
+| `__consumer_offsets`        | committed offsets keyed by `(group, topic, part)` |
+| `__transaction_state`       | transaction state keyed by `transactional.id`     |
+| `<your-streams-app>-store-changelog` | KTable state                          |
+| Schema Registry             | schema versions keyed by subject                  |
+
+These are the topics that make Kafka act like a database in places.
+Misconfiguring their compaction means losing consumer offsets, transaction
+state, or schemas. Default broker configs for the internal ones are sane;
+do not "tune" them without a specific reason.
+
+## Diagnostic rules that catch this
+
+- **`segment-ms-on-compacted`** — flags compacted topics with the default
+  7-day `segment.ms`.
+- **`min-cleanable-dirty-ratio-too-high`** — warns on very lazy compaction
+  on `__consumer_offsets`.
+
+## Related
+
+- [The controller and metadata propagation](/learn/controller-and-metadata) —
+  the controller is itself backed by a compacted metadata log.
+- [Exactly-once semantics](/learn/exactly-once) —
+  `__transaction_state` is a compacted topic by necessity.
+
+## Further reading
+
+- Apache Kafka docs, "Log Compaction"
+- KIP-280 — improvements to the cleaner
+- Jun Rao, "Bottled Water: Real-time integration of PostgreSQL and Kafka"
+  for the canonical compacted-topic use case (CDC into a state store)

@@ -1,0 +1,124 @@
+---
+title: Exactly-once semantics and the transaction coordinator
+description: The idempotent producer, the transactional producer, the transaction coordinator — what each one buys you and what it costs.
+date: "2026-05-23"
+---
+
+"Exactly-once delivery" is the most misunderstood phrase in Kafka. There is
+no protocol that magically eliminates duplicates over an unreliable network;
+every system that claims exactly-once is doing one of two things:
+
+1. **Idempotent writes** — the producer can retry safely because the broker
+   recognizes duplicates and drops them.
+2. **Transactional writes** — a group of writes either all become visible
+   or none do, and consumers can opt to skip the aborted ones.
+
+Kafka does both. They compose. Together they are what marketing calls
+"exactly-once semantics" (EOS).
+
+## The idempotent producer
+
+Enabled with `enable.idempotence=true`. The producer:
+
+- Asks the broker for a **PID** (producer id) on first connect.
+- Tags every produce request with `(pid, sequence)` per partition.
+- The broker tracks the last 5 sequences per `(pid, partition)` and rejects
+  duplicates, returning success for retries that match an already-accepted
+  sequence.
+
+This eliminates the "produce retried after a connection blip" duplicate
+class. It does **not** protect against duplicates from producer-side
+crashes that reset the PID, and it operates per partition, not across
+partitions.
+
+It is essentially free — flip the bit. Kafka 3.0 made it the default for
+new producers. If you have `enable.idempotence=true` you also need
+`acks=all` and `max.in.flight.requests.per.connection ≤ 5`; the
+[`enable-idempotence-vs-acks` diagnostic rule](/diagnose) flags violations.
+
+## The transactional producer
+
+Enabled with `transactional.id=<stable-string>`. The producer additionally:
+
+- Calls `initTransactions()` once at startup, which durably registers the
+  `transactional.id` with the **transaction coordinator** (a broker chosen
+  by `hash(transactional.id) % num_partitions(__transaction_state)`).
+- Wraps writes in `beginTransaction()` / `commitTransaction()` /
+  `abortTransaction()`.
+- Uses two-phase commit. The coordinator durably records the intent
+  (PREPARE_COMMIT or PREPARE_ABORT) before fanning out control markers to
+  every partition leader the transaction touched.
+
+`read_committed` consumers skip records that are part of an in-flight or
+aborted transaction. `read_uncommitted` consumers see everything.
+
+Walk through the protocol end to end below:
+
+<TransactionLifecycle />
+
+## Fencing zombies
+
+When two producers share the same `transactional.id` — say, a Kubernetes
+pod that crashed and got rescheduled — the second one's `initTransactions()`
+**increments the producer epoch**. The coordinator rejects any further
+requests from the old epoch. The zombie cannot poison the transaction by
+producing or committing.
+
+This is why `transactional.id` should be **stable and unique per logical
+producer instance**. A random UUID per restart defeats the fencing; a
+hashed-from-pod-name string works, with the caveat that two pods with the
+same name (during a deployment) will fence each other.
+
+## Consume-process-produce loops
+
+The most common EOS use case is reading from one topic, processing, and
+writing to another — Kafka Streams does this everywhere, and so do
+hand-rolled ETL jobs. The protocol:
+
+1. Consumer reads from input topic.
+2. Within `beginTransaction()` / `commitTransaction()`, the producer:
+   - writes the output records, AND
+   - calls `sendOffsetsToTransaction()` to commit the consumer's input
+     offsets as part of the same transaction.
+3. On commit, both the output records and the offset commits become visible
+   atomically. On abort, neither does — the consumer re-reads on next poll.
+
+This is what makes the streams API exactly-once. Outside Streams it's
+ergonomic enough but requires careful handling of the consumer's auto-commit
+(turn it off) and the producer's transaction state machine.
+
+## The cost
+
+- **Latency**: every commit is two round trips to the coordinator plus
+  control markers to every involved partition leader. Typically adds
+  20–50 ms per commit.
+- **Throughput**: the in-flight window is limited (5) and you cannot
+  pipeline transactions per producer. High-throughput EOS pipelines use
+  many producers each transacting smallish batches.
+- **Operational**: the coordinator partition (a slice of
+  `__transaction_state`) is a SPOF for that transactional.id. Keep
+  `transaction.state.log.replication.factor=3` and `min.insync.replicas=2`.
+
+## Not exactly-once: external sinks
+
+If your "transaction" writes to Kafka AND to Postgres, you've lost EOS.
+The two writes are not atomic. The standard workarounds:
+
+- **Idempotent sink** — design the Postgres write to be idempotent (UPSERT
+  on a deterministic key derived from the Kafka offset).
+- **Outbox pattern** — write to a Postgres outbox table inside the same
+  Postgres transaction, then ship the outbox to Kafka via Debezium or a
+  similar CDC tool. This pushes the atomicity into the database.
+- **Two-phase commit XA** — possible in theory, almost never in practice.
+
+## Diagnostic rules
+
+- **`enable-idempotence-vs-acks`** — flags `enable.idempotence=true` without
+  `acks=all` or with `max.in.flight.requests.per.connection > 5`.
+
+## Further reading
+
+- KIP-98 — exactly-once delivery and transactional messaging
+- KIP-447 — producer scalability for EOS
+- Confluent's "Exactly-Once Semantics" deep-dive (Apurva Mehta)
+- Jay Kreps, "Exactly-Once Support in Apache Kafka" (the design rationale)

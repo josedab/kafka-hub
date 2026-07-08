@@ -1,0 +1,126 @@
+---
+title: "Agent traces as Kafka topics"
+description: "Treating each LLM tool-call, thought, and observation as a partitioned event. The schema and topic layout that scales."
+date: "2026-05-26"
+---
+
+LLM agents produce a stream, not a row. Every tool call, thought, observation,
+retry, and final answer is useful for debugging and evaluation. Kafka gives that
+stream ordering, retention, fan-out, and replay.
+
+<AgentTraceTopology />
+
+## One event type, not five topics
+
+Start with one append-only topic for the run timeline:
+
+```json
+{
+  "agent_run_id": "run_01HZY",
+  "seq": 42,
+  "kind": "tool_call",
+  "ts": "2026-05-26T15:03:11Z",
+  "payload": { "tool": "search", "args_ref": "s3://trace-blobs/run_01HZY/42" }
+}
+```
+
+Use `kind: tool_call | thought | observation | error | final`. One topic keeps
+ordering simple because every event for a run has the same key. Splitting into
+`agent.thoughts`, `agent.tools`, and `agent.errors` makes global reconstruction
+harder and turns debugging into a join problem.
+
+The companion topic is compacted state:
+
+```json
+{ "agent_run_id": "run_01HZY", "status": "running", "last_seq": 42, "phase": "searching" }
+```
+
+That topic answers "what is agent X doing right now?" without scanning the full
+trace log.
+
+## Partition by run id
+
+Key every trace event by `agent_run_id`. Kafka only promises order within a
+partition, so all events for one run must land on one partition.
+
+```ts
+producer.send({
+  topic: "agent-events.v1",
+  key: event.agent_run_id,
+  value: JSON.stringify(event),
+});
+```
+
+This gives you deterministic replay for one run and horizontal scale across
+many runs. If a single run can emit millions of events, the agent is now the hot
+key; shard the run into explicit phases instead of changing keys mid-run.
+
+## Topic layout
+
+```properties
+# Complete timeline, ordered per run
+agent-events.v1.cleanup.policy=delete
+agent-events.v1.retention.ms=604800000
+agent-events.v1.partitions=96
+agent-events.v1.replication.factor=3
+
+# Latest state per run
+agent-state.v1.cleanup.policy=compact
+agent-state.v1.min.cleanable.dirty.ratio=0.2
+agent-state.v1.segment.ms=21600000
+
+# Long-lived traces for offline scoring
+agent-events-eval.v1.cleanup.policy=delete
+agent-events-eval.v1.retention.ms=7776000000
+```
+
+Separate topics by purpose, not by event kind. `ops` traces can expire quickly;
+`eval` traces live longer because graders, auditors, and offline training jobs
+consume them days later.
+
+## Replay and debug
+
+To reconstruct a run, consume from the beginning and stop when you reach the
+final event for the requested key:
+
+```bash
+kafka-console-consumer \
+  --topic agent-events.v1 \
+  --from-beginning \
+  --property print.key=true | grep 'run_01HZY'
+```
+
+In production, use a real consumer with `assign()` to seek only the partitions
+that could contain the run. The important rule is that the trace topic remains
+append-only. Fix bad state by writing a new event, not by mutating history.
+
+## Fan-out into evaluation
+
+The same `agent-events.v1` stream can feed multiple consumers:
+
+```text
+agent-events.v1
+  ├─ agent-state-writer  →  agent-state.v1 (compact)
+  ├─ eval-pipeline       →  agent-scores.v1
+  └─ debug-replay        →  trace warehouse
+```
+
+The eval pipeline usually waits for `kind=final`, then joins previous tool calls
+and observations to score the outcome: groundedness, cost, latency, tool error
+rate, and human-review verdicts.
+
+## Pitfalls
+
+- **Huge tool-call args.** Store large JSON, base64 images, PDFs, and browser
+  screenshots in object storage. Put a content-addressed reference in Kafka.
+- **PII in observations.** Tool outputs often contain customer data. Classify,
+  redact, and set shorter retention for operational trace topics.
+- **GDPR deletion.** Compacted state can be tombstoned with `value=null`; raw
+  trace topics need retention boundaries or a separate delete workflow.
+- **Runaway thoughts.** If prompts emit megabytes of reasoning, cap payload
+  size at the producer and write an `error` event when truncation happens.
+
+## Related
+- [Log compaction internals](/learn/log-compaction) — how `agent-state.v1` keeps only the latest state per run.
+- [Partition assignment strategies](/learn/partition-assignment) — why run-key ordering depends on stable partition ownership.
+- [Kafka for AI engineers](/learn/kafka-for-ai) — the broader AI architecture overview.

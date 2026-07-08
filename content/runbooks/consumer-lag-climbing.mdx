@@ -1,0 +1,90 @@
+---
+title: "Consumer lag is climbing"
+description: "Your dashboard says lag is climbing fast. Triage in five minutes."
+date: "2026-05-26"
+---
+
+## Symptom
+
+Consumer group lag is rising faster than the group can drain it. The symptom may be a single
+partition falling behind, every partition in the topic drifting upward, or a sawtooth pattern
+where lag drops briefly after each rebalance and then climbs again.
+
+Treat the first five minutes as blast-radius discovery. Do not scale the deployment until you
+know whether the bottleneck is per-partition, in the process, downstream, or broker-side.
+
+## Quick checks (in order)
+
+1. Check per-partition lag with `kafka-consumer-groups.sh --bootstrap-server $BS --describe --group $GROUP`. Good: lag is evenly distributed and falling. Bad: one partition owns most lag, or every partition rises at the same slope.
+2. Check consumer process health in your orchestrator and logs: restarts, OOMKills, blocked threads, and `Revoking previously assigned partitions`. Good: stable pods and steady `poll()` cadence. Bad: crash loops, repeated joins, or no logs from the assigned member.
+3. Check GC pauses with JVM GC logs, JFR, or `jstat -gcutil $PID 1s`. Good: pauses are well below `session.timeout.ms` and batch processing time. Bad: stop-the-world pauses line up with lag spikes.
+4. Check network to brokers with client metrics (`request-latency-avg`, `fetch-latency-avg`) and a simple `kcat -b $BS -L`. Good: metadata and fetches return quickly. Bad: timeouts, DNS churn, or one broker much slower than peers.
+5. Check downstream calls from the consumer: database, HTTP, object storage, feature store. Good: downstream p95 is stable and below your per-record budget. Bad: downstream latency grows while Kafka fetch latency stays normal.
+6. Check batch processing time against `max.poll.interval.ms`. Good: worst batch finishes comfortably before the interval. Bad: logs like `consumer poll timeout has expired` or `CommitFailedException` after a long batch.
+7. Check whether the assigned member is alive and actually processing. Good: the member with the hot partition emits application progress. Bad: heartbeats continue but the worker thread is wedged.
+
+## Likely causes
+
+- Downstream system is slow — tell: Kafka fetch latency is normal, but handler latency or downstream p95 rises with lag.
+- Single hot partition — tell: one partition has most of the lag and maps to a hot key or tenant.
+- Slow GC in the consumer — tell: long GC pauses line up with missed polls, rebalances, or flat application throughput.
+- Broker-side ISR shrink is preventing the high watermark from advancing — tell: `UnderReplicatedPartitions` rises and consumers fetch little or nothing while producers wait on `acks=all`.
+- Consumer crashed and the group is not settling — tell: generation IDs keep changing and assignments are repeatedly revoked.
+- Partition is assigned to a process that is dead for work but still in the group — tell: heartbeats continue, but the processing thread or executor has stopped making progress.
+
+## Fixes
+
+### Downstream system is slow
+
+Shed or isolate the slow dependency first. Reduce batch size temporarily, add a timeout, and pause the affected partitions instead of blocking the whole poll loop.
+
+```properties
+max.poll.records=100
+request.timeout.ms=30000
+```
+
+### Single hot partition
+
+Scale-out will not fix one hot partition. Split the keyspace, add partitions only if the key can be redistributed, or route the hot tenant to a dedicated topic.
+
+```bash
+kafka-topics.sh --bootstrap-server "$BS" --alter --topic orders --partitions 48
+```
+
+### Slow GC in the consumer
+
+Lower allocation in the handler, cap batch size, and move to G1/ZGC with explicit pause goals. Roll one instance first and watch poll latency before changing the whole group.
+
+```properties
+max.poll.records=250
+-XX:+UseG1GC
+-XX:MaxGCPauseMillis=200
+```
+
+### Broker-side ISR shrink is preventing high-watermark progress
+
+Stabilize replicas before tuning consumers. Fix the broker or disk/network issue causing followers to fall out of ISR, then verify the partition high watermark advances again.
+
+```bash
+kafka-topics.sh --bootstrap-server "$BS" --describe --under-replicated-partitions
+```
+
+### Consumer crashed and the group is not settling
+
+Stop the crash loop, roll back the bad deployment, and wait for one clean generation. If static membership is configured, remove or restart the stuck member identity.
+
+### Partition is assigned to a wedged process
+
+Fail the process so the group coordinator can revoke its assignment. Add watchdogs around worker pools so heartbeats cannot mask a dead executor.
+
+```java
+consumer.pause(Set.of(partition));
+// drain or fail the worker, then resume only after progress is visible
+consumer.resume(Set.of(partition));
+```
+
+## Related
+
+- Learn: [Consumer group rebalances](/learn/consumer-rebalance), [ISR mechanics and acks semantics](/learn/isr-and-acks)
+- Diagnose: [consumer poll and assignment rules](/diagnose) (`max-poll-interval-low`, `partition-assignment-strategy-range`)
+- Simulate: [slow consumer](/simulate?scenario=slow-consumer)

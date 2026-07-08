@@ -1,0 +1,83 @@
+---
+title: "Transactional producer stuck in PendingTransition"
+description: "A transactional producer is waiting forever. Find the coordinator, epoch, and timeout failure."
+date: "2026-05-26"
+---
+
+## Symptom
+
+A producer using `transactional.id` stops making progress and surfaces `PendingTransition`,
+`CONCURRENT_TRANSACTIONS`, repeated `FindCoordinator`, or application-level waits around
+`commitTransaction()` / `abortTransaction()`. Downstream consumers in `read_committed` may also
+stall behind an open transaction.
+
+The dangerous move is restarting every producer at once. First identify whether the transaction
+coordinator is unhealthy, the producer was fenced, the timeout is too short, or a crashed process
+left an unresolved transaction behind.
+
+## Quick checks (in order)
+
+1. Check the transaction coordinator broker health. Describe `__transaction_state` and inspect the leader for the transactional ID's partition. Good: leader is in ISR and request latency is normal. Bad: coordinator broker recently bounced or the partition is under-replicated.
+2. Check `transaction.timeout.ms` on the producer and `transaction.max.timeout.ms` on brokers. Good: workload finishes well below the timeout and broker cap. Bad: transactions routinely exceed the default 60 seconds.
+3. Check pending open transactions with `kafka-transactions.sh --bootstrap-server $BS describe --transactional-id $TID` or AdminClient `DescribeTransactions`. Good: state changes quickly to complete or abort. Bad: one transaction remains open while offsets stop advancing.
+4. Check producer logs upstream for `ProducerFencedException`, epoch mismatches, or duplicate `transactional.id`. Good: one live instance owns each ID. Bad: two pods or tasks use the same ID.
+5. Check whether the producer crashed without aborting. Good: shutdown hooks call `abortTransaction()` when work fails. Bad: pod kills or deploys leave transactions until timeout.
+6. Check consumers with `isolation.level=read_committed`. Good: they advance after commit markers. Bad: they appear stuck behind the last stable offset while `read_uncommitted` can see newer data.
+
+## Likely causes
+
+- Coordinator broker bounced mid-transaction — tell: coordinator logs show leadership or network errors at the time the producer entered pending state.
+- `transactional.id` collision across instances — tell: `ProducerFencedException` appears on one instance and deployment identity is not unique.
+- Transaction timeout is too short for the workload — tell: long batches consistently cross `transaction.timeout.ms` before commit.
+- Producer crashed without aborting the transaction — tell: the transactional ID remains open until timeout and no owning process is active.
+
+## Fixes
+
+### Coordinator broker bounced mid-transaction
+
+Wait for the coordinator partition to elect a stable leader, then retry the transaction from application code. If the coordinator partition is under-replicated, fix ISR before restarting producers.
+
+```bash
+kafka-topics.sh --bootstrap-server "$BS" --describe --topic __transaction_state
+```
+
+### `transactional.id` collision across instances
+
+Make `transactional.id` stable per logical producer instance and unique across concurrent instances. For Kubernetes, derive it from StatefulSet ordinal, not a Deployment replica template shared by all pods.
+
+```properties
+transactional.id=payments-writer-${HOSTNAME}
+enable.idempotence=true
+acks=all
+```
+
+### Transaction timeout is too short for the workload
+
+Shorten the transaction by committing more often, or raise `transaction.timeout.ms` below the broker's `transaction.max.timeout.ms`. Do not use huge transactions to cover slow downstream systems.
+
+```properties
+transaction.timeout.ms=180000
+# broker cap must be greater than or equal to producer timeout
+transaction.max.timeout.ms=300000
+```
+
+### Producer crashed without aborting the transaction
+
+Abort on every failure path and close the producer during shutdown. If the owner is gone and the transaction is hanging, use the transactions tool or AdminClient to find and abort it according to your Kafka version's operational procedure.
+
+```java
+try {
+  producer.beginTransaction();
+  processBatch(records);
+  producer.commitTransaction();
+} catch (Exception e) {
+  producer.abortTransaction();
+  throw e;
+}
+```
+
+## Related
+
+- Learn: [Exactly-once semantics](/learn/exactly-once)
+- Diagnose: [transactional producer rules](/diagnose) (`transactional-id-fixed`, `transaction-state-rf-low`, `enable-idempotence-vs-acks`)
+- Simulate: No direct transaction scenario yet; use [ISR shrink](/simulate?scenario=isr-shrink) to review coordinator topic replication risk.

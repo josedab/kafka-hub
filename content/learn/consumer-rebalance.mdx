@@ -1,0 +1,117 @@
+---
+title: Consumer group rebalances — eager vs cooperative
+description: Why your consumer group goes to sleep every time a pod restarts, and how cooperative-sticky fixes it.
+date: "2026-05-19"
+scenarios: ["slow-consumer"]
+---
+
+A consumer group rebalance is the most expensive thing that happens in a
+healthy Kafka system. Every member stops reading, the coordinator computes a
+new partition-to-consumer assignment, and everyone resumes from their last
+committed offset. If your consumers are slow to restart — say they're warming
+caches or running schema validation — your end-to-end latency hits a wall for
+seconds or minutes every time a single pod restarts.
+
+There are two protocols. The default until very recently — and still common
+in production — is **eager**. The newer one, available since Kafka 2.4 and
+default-ish since 3.x, is **cooperative**. The difference is night and day
+for long-running consumers.
+
+## The mechanics
+
+When a consumer joins or leaves, or the topic gains partitions, the group
+coordinator triggers a rebalance. Both protocols share the join phase: every
+member sends a `JoinGroup` request, the coordinator picks a leader from
+among them, the leader runs the assignor, and the result is broadcast back
+via `SyncGroup`.
+
+The difference is what happens to in-flight partition processing during that
+window.
+
+<RebalanceVisualizer />
+
+### Eager (the default until 2.4)
+
+Step one is **revoke everything**. Every consumer drops every partition,
+flushes commits, and waits for the new assignment. From the application's
+perspective, the consumer is "asleep" for the entire rebalance — which means
+your `poll()` loop returns empty records, your throughput drops to zero, and
+any in-memory state tied to a partition (a cache, a windowed aggregation, an
+open file handle) gets torn down.
+
+### Cooperative (incremental)
+
+Step one is **revoke only the partitions that need to move**. The coordinator
+runs the assignor twice, in effect: once to plan the target state, once to
+emit the minimal revoke set. Consumers whose assignment is unchanged keep
+processing without interruption.
+
+In the demo above, when `c-4` joins a steady-state group of three:
+
+- **Eager** revokes all six partitions, then reassigns: a 100% downtime
+  window for every consumer.
+- **Cooperative** revokes only `p3` from c-2 and `p5` from c-3; c-1 never
+  pauses, and c-2/c-3 pause only on their moving partitions.
+
+## How to switch
+
+It's a one-line change on the consumer:
+
+```properties
+partition.assignment.strategy=org.apache.kafka.clients.consumer.CooperativeStickyAssignor
+```
+
+Switching to cooperative-sticky requires a **rolling bounce** — the old
+eager assignors and the cooperative-sticky assignor cannot coexist in the
+same group mid-rebalance. The supported path is a two-phase deploy:
+
+1. Roll consumers to a config that lists **both** the old assignor and
+   `CooperativeStickyAssignor`. They'll keep using the old one because the
+   group leader still picks the first common assignor.
+2. Roll consumers to a config that lists **only**
+   `CooperativeStickyAssignor`. The next rebalance flips the protocol.
+
+Confluent's docs have a detailed migration guide; Kafka 3.x makes this
+default for new groups.
+
+## Why the rebalance was so bad in the first place
+
+The eager rebalance was an architectural choice rooted in the original
+assumption that consumers were stateless. As stateful consumers (Kafka
+Streams, Flink, applications with in-memory windows) became the norm, the
+"drop everything, redo everything" pattern got obviously wrong. KIP-429
+introduced cooperative rebalancing as a strict generalization: same
+correctness guarantees, fewer partitions move, less state thrashing.
+
+## What still triggers a full revoke even in cooperative mode
+
+- A consumer joining with a different **`session.timeout.ms`** /
+  **`heartbeat.interval.ms`** that the coordinator rejects.
+- Schema mismatch between members (e.g., one consumer brings new metadata
+  the coordinator can't reconcile).
+- Application code that catches an exception inside the rebalance listener
+  and rejoins the group, restarting the whole dance.
+
+Always log `RebalanceListener.onPartitionsRevoked` and
+`onPartitionsAssigned` so you can correlate latency spikes with rebalance
+churn after the fact.
+
+## Diagnostic rules
+
+If you have a consumer `.properties` to hand, [Diagnose it](/diagnose). The
+rule **`auto-offset-reset-latest`** is the most common rebalance-adjacent
+trap — a new consumer group joining at `latest` after a long outage will
+silently drop the backlog every operator expected it to replay.
+
+## Related articles
+
+- [Partition assignment strategies](/learn/partition-assignment) — what
+  range, round-robin, sticky and cooperative-sticky actually compute.
+- [ISR mechanics and acks semantics](/learn/isr-and-acks) — the producer-side
+  cost model that interacts with how often consumers rebalance.
+
+## Further reading
+
+- KIP-429 — Cooperative Incremental Rebalancing
+- KIP-848 — Next-generation consumer rebalance (server-driven)
+- Confluent blog, "Cooperative Rebalancing" (Konstantine Karantasis)

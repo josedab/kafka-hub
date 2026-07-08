@@ -1,0 +1,28 @@
+{
+  "title": "Learn",
+  "pages": [
+    "index",
+    "isr-and-acks",
+    "unclean-leader-election",
+    "consumer-rebalance",
+    "partition-assignment",
+    "controller-and-metadata",
+    "exactly-once",
+    "log-compaction",
+    "kafka-for-ai",
+    "embedding-backpressure",
+    "agent-traces",
+    "---Reference---",
+    "glossary"
+  ],
+  "track": [
+    "isr-and-acks",
+    "unclean-leader-election",
+    "consumer-rebalance",
+    "partition-assignment",
+    "controller-and-metadata",
+    "exactly-once",
+    "log-compaction",
+    "kafka-for-ai"
+  ]
+}

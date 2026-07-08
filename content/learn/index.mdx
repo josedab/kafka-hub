@@ -1,0 +1,27 @@
+---
+title: Learn
+description: Long-form interactive articles on Kafka internals. The interactive piece is the wedge.
+---
+
+This is the Learn surface. Each article ships with at least one custom
+interactive component so you can actually manipulate the system you're reading
+about. Pick a topic from the sidebar.
+
+## Article slate
+
+The full Phase 1 slate, all live:
+
+- [ISR mechanics and acks semantics](/learn/isr-and-acks) — replica state + acks
+- [Quorum loss and unclean leader election](/learn/unclean-leader-election) — safe vs unclean failover
+- [Consumer group rebalances](/learn/consumer-rebalance) — eager vs cooperative
+- [Partition assignment strategies](/learn/partition-assignment) — range, round-robin, sticky, cooperative-sticky
+- [The controller and metadata propagation](/learn/controller-and-metadata) — KRaft, fencing, epochs
+- [Exactly-once semantics](/learn/exactly-once) — idempotent + transactional producer
+- [Log compaction internals](/learn/log-compaction) — tombstones, dirty ratio, LogCleaner
+- [Kafka for AI engineers](/learn/kafka-for-ai) — RAG ingestion, agent traces, online features
+
+Need a quick decode ring? Use the [Kafka glossary](/learn/glossary) for ISR, KRaft, tombstones, and the rest.
+
+If you have a topic you wish existed here,
+[open an issue](https://github.com/josedab/kafka-hub/issues) on the repo.
+

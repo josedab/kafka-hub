@@ -1,0 +1,89 @@
+---
+title: "Broker won't restart"
+description: "A broker is down and refuses to come back. Separate data loss risk from startup noise."
+date: "2026-05-26"
+---
+
+## Symptom
+
+A broker process exits during startup or sits in a restart loop. Clients may still be serving
+from other brokers, but partitions that need this broker as leader or replica are degraded and
+controller logs are filling with registration or replica-fetch errors.
+
+The goal is to prove whether the broker is blocked by storage, identity, network/quorum, JVM,
+or listener configuration before deleting anything in a log directory.
+
+## Quick checks (in order)
+
+1. Check log directory disk and inode space with `df -h`, `df -i`, and the broker startup log. Good: free space exists and Kafka can create files. Bad: `No space left on device`, read-only mounts, or permission denied.
+2. Check for segment corruption in the broker log: `CorruptRecordException`, `InvalidOffsetException`, or failed recovery of a specific `.log` file. Good: recovery scans complete. Bad: the same segment fails every boot.
+3. Check controller-side registration timeout. In KRaft, run `kafka-metadata-quorum.sh --bootstrap-server $BS describe --status`; in ZooKeeper clusters, check broker znodes and controller logs. Good: the broker registers quickly. Bad: controller never sees the broker or fences it.
+4. Check JVM heap and container limits. Good: configured heap is below the cgroup memory limit with room for page cache and direct buffers. Bad: `OutOfMemoryError` or Linux OOM kills before startup completes.
+5. Check ZooKeeper or KRaft connectivity from the broker host with TLS/SASL enabled exactly as configured. Good: quorum endpoints are reachable and auth succeeds. Bad: socket timeouts, auth failures, or stale DNS.
+6. Check broker identity: `broker.id`/`node.id`, `cluster.id`, and `meta.properties` in every log dir. Good: IDs match the cluster. Bad: duplicate broker ID, wrong cluster ID, or mixed metadata across disks.
+7. Check listener ports with `lsof -nP -iTCP:$PORT -sTCP:LISTEN`. Good: Kafka owns the configured ports. Bad: another process is bound or the advertised listener is invalid.
+
+## Likely causes
+
+- Corrupted log segment — tell: startup fails on the same segment path during log recovery.
+- Missing or wrong broker ID versus cluster ID — tell: `meta.properties` disagrees with `server.properties` or the controller fences the broker.
+- Stale lock file — tell: Kafka reports `Failed to acquire lock on file .lock` and no Kafka process owns the directory.
+- JVM OOM on startup — tell: heap dump, `OutOfMemoryError`, or container OOM events before broker registration.
+- Certificate expired — tell: TLS handshake failures start at broker boot and certificate dates are in the past.
+- Listener port conflict — tell: bind exceptions for `listeners` or `advertised.listeners` ports.
+
+## Fixes
+
+### Corrupted log segment
+
+Prefer restoring from replicas: stop the broker, move only the corrupt segment and its indexes out of the log dir, then let the broker truncate or refetch from leaders. Never delete the whole partition directory unless you have confirmed replicas are healthy.
+
+```bash
+mkdir -p recovery-hold/topic-7
+mv /var/lib/kafka/data/topic-7/000000000123456789.log recovery-hold/topic-7/
+mv /var/lib/kafka/data/topic-7/000000000123456789.index recovery-hold/topic-7/ || true
+```
+
+### Missing or wrong broker ID versus cluster ID
+
+Do not invent a new `cluster.id`. Restore the original `meta.properties` or correct `broker.id`/`node.id` to match the registered broker identity, then restart once.
+
+```properties
+node.id=3
+process.roles=broker
+```
+
+### Stale lock file
+
+First prove no Kafka process owns the log dir with `lsof +D /var/lib/kafka/data`. If it is clean after a crash, remove the stale `.lock` file and restart.
+
+### JVM OOM on startup
+
+Set heap below the container limit and leave memory for the page cache. Large log recovery needs off-heap and filesystem cache, not just Java heap.
+
+```bash
+export KAFKA_HEAP_OPTS="-Xms4g -Xmx4g"
+```
+
+### Certificate expired
+
+Renew the broker certificate and truststore, then restart one broker at a time. Verify inter-broker TLS before opening client traffic.
+
+```bash
+openssl x509 -in broker.crt -noout -dates -subject
+```
+
+### Listener port conflict
+
+Stop the conflicting process or move Kafka to a free port. Keep `listeners` bind addresses and `advertised.listeners` routable addresses separate.
+
+```properties
+listeners=INTERNAL://0.0.0.0:9092
+advertised.listeners=INTERNAL://broker-3.kafka.svc:9092
+```
+
+## Related
+
+- Learn: [The controller and metadata propagation](/learn/controller-and-metadata)
+- Diagnose: [broker identity, replication, and listener rules](/diagnose) (`broker-id-vs-cluster-id`, `replication-factor-too-low`, `plaintext-listener-in-prod`)
+- Simulate: No direct broker-startup scenario yet; use [quorum loss](/simulate?scenario=quorum-loss) to review degraded replica behavior.

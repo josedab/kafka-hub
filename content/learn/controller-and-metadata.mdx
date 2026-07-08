@@ -1,0 +1,128 @@
+---
+title: The controller, broker registration, and metadata propagation
+description: How brokers find each other, who elects whom, and why "metadata refresh" shows up in every Kafka stack trace.
+date: "2026-05-22"
+scenarios: ["network-partition"]
+---
+
+Every Kafka cluster has exactly one **controller** — a broker with special
+responsibilities. It elects partition leaders, manages topic creation, fences
+zombie brokers, and pushes a consistent metadata snapshot out to everyone.
+
+Before KRaft (KIP-500), the controller was elected via ZooKeeper. As of
+Kafka 3.3 KRaft is GA and 4.0 removed ZooKeeper entirely. The mental model
+in this article is KRaft; ZooKeeper-era specifics are footnoted where the
+behavior diverges.
+
+## Broker lifecycle
+
+When a broker starts:
+
+1. It loads `meta.properties` from its log dir — that's where it learns its
+   own `broker.id` (and refuses to start if it has the wrong cluster id).
+2. It connects to the **controller quorum** (a small set of dedicated
+   controller nodes, or co-located on the brokers in combined mode).
+3. It sends a `BrokerRegistration` request listing every endpoint it speaks
+   on (PLAINTEXT, SSL, SASL_SSL, etc.) and its features (which IBP version).
+4. The controller adds it to the metadata log under a fresh broker epoch.
+   That epoch is the source of truth for fencing later: if the broker
+   crashes and reincarnates, the new instance gets a new epoch and the
+   controller invalidates anything the old one might still be holding.
+5. Other brokers learn about it via the metadata log fetch loop.
+
+A heartbeat every `broker.heartbeat.interval.ms` (default 2s) keeps the
+broker registered. Miss `broker.session.timeout.ms` (default 9s) and the
+controller fences the broker — its partitions go through leader election.
+
+## Controller election
+
+The controller quorum is a Raft cluster. Election is a Raft term:
+
+- All quorum members start as followers.
+- A timeout triggers a vote; a candidate that wins a majority of the term
+  becomes leader of the metadata log.
+- The metadata-log leader **is** the active controller.
+
+Step through a failover below.
+
+<ControllerHandoff />
+
+The controller epoch increments on every election. Brokers refuse stale
+metadata updates from a controller whose epoch is lower than what they've
+already seen — that's how you avoid the split-brain disaster where two
+brokers both think they're the controller.
+
+## Metadata propagation
+
+Brokers (and clients!) **pull** metadata. They don't get pushed an event
+when, say, a leader changes for a partition.
+
+- Brokers run a metadata fetch loop against the controller quorum and apply
+  every record from the metadata log in order.
+- Clients periodically fetch the cluster metadata via the standard
+  `Metadata` RPC against any broker. Default refresh is every 5 minutes
+  (`metadata.max.age.ms`), or on demand when the client sees a
+  `NotLeaderForPartition` error or similar.
+
+This pull model is what makes "metadata refresh" appear in every Kafka
+client log. When you change a topic's partition count, the producer
+doesn't see the new partitions until its next refresh. When a leader fails
+over, the producer fails one request, refreshes metadata, and retries.
+
+## Why brokers fence so aggressively
+
+The whole protocol leans on the assumption that a fenced broker stops being
+able to serve. The fencing mechanism is:
+
+- Metadata epoch in every fetch request. The leader rejects fetches from a
+  follower with the wrong epoch.
+- Producer epoch in every `Produce` request when transactional.id is set.
+  The transaction coordinator rejects produces from a fenced PID.
+- Leader epoch in every replica fetch. After leader election, followers
+  truncate to the last known good offset for the new epoch — KIP-101 and
+  KIP-279.
+
+When you see `FencedLeaderEpochException` in a client log, that's this
+machinery firing. The fix is almost always "let the client refresh
+metadata and retry"; the bigger question is *why* the leader changed,
+which usually points at a broker that flapped under load.
+
+## The controller is special, not infinitely powerful
+
+The controller is a single broker (in dedicated mode, one of a small
+quorum). It is responsible for:
+
+- Partition leader election
+- Topic creation / deletion
+- Reassignment driving
+- Broker registration / fencing
+- ACL changes (KRaft only)
+
+It is **not** in the data path. Produce and fetch requests go directly to
+the partition leader. A loaded controller can slow down topic creation
+and leader-election convergence under failures; it never bottlenecks a
+healthy steady-state cluster.
+
+## Useful operator views
+
+- `kafka-metadata-shell.sh` (KRaft) — browse the metadata log offline.
+- `kafka-cluster.sh cluster-id` — confirm clients are talking to the cluster
+  you think they are.
+- `kafka-features.sh describe` — what IBP version the controller currently
+  exposes.
+
+## Related
+
+- [ISR mechanics and acks semantics](/learn/isr-and-acks) — what the
+  controller is actually adjudicating when ISRs shift.
+- [Quorum loss and unclean leader election](/learn/unclean-leader-election) —
+  the scenario the controller hands off to operator intervention.
+- [Consumer rebalances](/learn/consumer-rebalance) — the *group* coordinator
+  is a separate role; this article is about the *cluster* controller.
+
+## Further reading
+
+- KIP-500 — the KRaft proposal
+- KIP-595 — Raft for Kafka's metadata quorum
+- KIP-631 — quorum-based controller
+- Apache Kafka 3.3 release notes on KRaft GA

@@ -1,0 +1,79 @@
+---
+title: "Controller is flapping"
+description: "Controller leadership keeps moving. Stabilize metadata before chasing client symptoms."
+date: "2026-05-26"
+---
+
+## Symptom
+
+Controller leadership changes repeatedly, broker metadata epochs jump, and clients see bursts of
+`LEADER_NOT_AVAILABLE`, metadata refresh latency, or short produce/fetch stalls. In ZooKeeper
+clusters this appears as controller broker changes; in KRaft clusters it appears as quorum leader
+changes or controller election churn.
+
+Do not treat this as a client problem first. If the controller is unstable, partition leadership,
+ISR updates, and topic metadata all become noisy.
+
+## Quick checks (in order)
+
+1. Check network jitter between controller and brokers with broker request metrics, packet loss, and controller log timestamps. Good: steady low-latency heartbeats. Bad: synchronized disconnects or retransmits around each election.
+2. Check ZooKeeper or KRaft quorum health. For KRaft, run `kafka-metadata-quorum.sh --bootstrap-server $BS describe --status`. Good: one stable leader and voters caught up. Bad: leader changes, high lag, or missing voters.
+3. Check JVM GC pauses on the controller broker or controller process. Good: max pause is comfortably below session or election timeouts. Bad: pauses line up with controller resignation.
+4. Check `zookeeper.session.timeout.ms` on ZooKeeper clusters. Good: timeout is long enough for observed GC and network jitter. Bad: a single pause exceeds the session timeout.
+5. Check `controller.quorum.election.timeout.ms` and `controller.quorum.fetch.timeout.ms` in KRaft. Good: election timeout exceeds normal jitter. Bad: followers trigger elections during routine latency spikes.
+6. Check controller broker workload. Good: the controller is not also the hottest data broker. Bad: request handler saturation, disk IO saturation, or leader concentration on the controller broker.
+
+## Likely causes
+
+- GC pause exceeds session timeout — tell: controller GC logs show a pause immediately before leadership changes.
+- Network partition or jitter between controller and quorum peers — tell: disconnects and elections happen without JVM pauses.
+- Controller broker is overloaded — tell: request queues, disk IO, or leader count are highest on the controller broker.
+- KRaft quorum loss or lag — tell: voters are missing, high watermark stalls, or the active controller cannot commit metadata records.
+
+## Fixes
+
+### GC pause exceeds session timeout
+
+Reduce heap pressure and tune pauses before raising timeouts. If the controller shares data traffic, move partition leaders away so metadata work is not competing with hot fetch/produce traffic.
+
+```bash
+kafka-leader-election.sh --bootstrap-server "$BS" --election-type PREFERRED --all-topic-partitions
+```
+
+Then set timeouts above measured worst-case pauses, not guesses.
+
+```properties
+zookeeper.session.timeout.ms=18000
+```
+
+### Network partition or jitter between controller and quorum peers
+
+Fix the network path first: bad rack links, conntrack exhaustion, DNS churn, or TLS renegotiation. Avoid masking packet loss with very large timeouts unless you accept slower failover.
+
+```bash
+kafka-broker-api-versions.sh --bootstrap-server "$BS" --command-config client.properties
+```
+
+### Controller broker is overloaded
+
+Move client traffic and partition leadership off the controller broker. In KRaft, prefer dedicated controllers for larger clusters; in ZooKeeper mode, keep broker heap and request handlers healthy enough for metadata spikes.
+
+```properties
+# KRaft dedicated controller node
+process.roles=controller
+controller.listener.names=CONTROLLER
+```
+
+### KRaft quorum loss or lag
+
+Restore voter majority before restarting more nodes. Bring back the missing controller with the same `node.id` and `cluster.id`; if storage is lost, follow Kafka's quorum recovery procedure rather than formatting a new cluster.
+
+```bash
+kafka-metadata-quorum.sh --bootstrap-server "$BS" describe --replication
+```
+
+## Related
+
+- Learn: [The controller and metadata propagation](/learn/controller-and-metadata)
+- Diagnose: [broker leader balance and timeout rules](/diagnose) (`auto-leader-rebalance-disabled`, `session-timeout-vs-heartbeat`)
+- Simulate: [network partition](/simulate?scenario=network-partition)

@@ -1,0 +1,149 @@
+---
+title: Kafka for AI engineers — RAG ingestion, agent traces, embeddings
+description: Where Kafka actually pulls its weight in an AI stack, and where you're better off skipping it.
+date: "2026-05-26"
+---
+
+Kafka is having a second life as the streaming backbone for AI applications.
+There are good reasons (back-pressure, replay, durable fan-out) and some bad
+ones (resume-driven architecture, "we have Kafka so let's use it"). This
+article walks the three use cases where Kafka genuinely earns its keep in
+an AI stack, with the architecture patterns that work in production.
+
+This article is the entry point for the broader **Kafka for AI Engineers**
+track. It assumes you already understand topics, partitions, and consumer
+groups at the level of the [ISR & acks](/learn/isr-and-acks) and
+[consumer rebalance](/learn/consumer-rebalance) articles.
+
+## Use case 1 — RAG ingestion pipelines
+
+The "embed everything in our document corpus" pipeline is the canonical fit:
+
+```
+docs.ingest  →  embedder workers  →  embeddings.results  →  vector sink
+   (raw text)     (call OpenAI/etc)     (vector + metadata)     (Pinecone, pgvector)
+```
+
+Why Kafka, and not "loop over a list":
+
+- **Back-pressure for free.** If the vector sink slows down, the embedder
+  workers' commit lag grows but they keep working through the topic at
+  their own pace. No retry storms.
+- **Replay.** When you change the embedding model, you re-read
+  `docs.ingest` from offset 0 and write to `embeddings.results.v2`. No
+  re-ingest of source documents needed.
+- **Fan-out.** Add a `summaries.results` consumer that reads the same
+  `docs.ingest` topic in a different group. Costs nothing on the producer
+  side.
+
+Try it below — turn up the embed latency and watch the lag grow.
+
+<RagPipelineSim />
+
+### Partition key strategy for RAG
+
+Pick a key that aligns with **what stays together logically** for downstream
+consumers. Two patterns that work:
+
+- **Key by document id** — every chunk of a document goes to the same
+  partition. The embedder sees them in order, which lets you do
+  context-window-aware embedding (chunk N has access to chunk N-1).
+- **Key by tenant id** — multi-tenant RAG. All chunks for tenant T land in
+  the same partition, simplifying reasoning about per-tenant rate limits.
+
+Anti-pattern: key by chunk id (effectively random). You lose any per-doc or
+per-tenant locality and add no benefit.
+
+### Producer config for embedding pipelines
+
+- `acks=all`, `enable.idempotence=true` — the embedder is going to call an
+  expensive remote API; you cannot afford to lose ingest events.
+- `compression.type=zstd` — text payloads compress fantastically and you
+  pay the network cost on every read by every embedder.
+- `batch.size=131072`, `linger.ms=20` — text-ingest workloads are
+  throughput-bound, not latency-bound.
+
+### Consumer config for embedding pipelines
+
+- `max.poll.interval.ms` should be **larger than your slowest model call**
+  by a comfortable margin. The default 5 minutes is fine for OpenAI; bump
+  it for self-hosted models that may stall on a cold start.
+- `max.poll.records=1` or low single digits, **if** each record triggers a
+  blocking model call. Otherwise you'll burn the entire batch on one
+  timeout and rebalance.
+
+## Use case 2 — Agent execution traces
+
+LLM agents produce reams of intermediate state — thoughts, tool calls,
+results, retries. Treating each agent run as a transaction that ends with a
+single "done" event throws away everything that's useful for debugging,
+evaluation, and offline training.
+
+A trace-as-topic pattern:
+
+```
+agent.runs        topic, key=run_id, retention=long, compaction=off
+agent.thoughts    topic, key=run_id, retention=long
+agent.tools       topic, key=run_id, retention=long
+agent.evals       compacted topic, key=run_id, value=eval verdict
+```
+
+The producer writes events at every step of the agent loop. Downstream
+consumers do whatever they want with the stream — write to a trace UI
+(Langsmith / Phoenix / homemade), pipe into an eval store, score for RLHF
+training, surface as analytics.
+
+Compaction on the `agent.evals` topic lets you mutate the verdict (e.g. a
+human review changes the original auto-score) without losing the audit
+chain — the original score stays in `agent.thoughts`.
+
+## Use case 3 — Online feature pipelines
+
+For ML systems that need fresh features at inference time (recommendations,
+fraud, ranking), Kafka in front of an online feature store is the standard
+pattern.
+
+```
+events  →  feature.computed  →  feature store (Redis/Aerospike/Cassandra)
+                ↓
+            offline DWH for training
+```
+
+The key property Kafka gives you: the **same** feature pipeline writes both
+the online store (low-latency point lookups) and the offline warehouse
+(joinable batch). You get train/serve consistency for free because both
+sides materialize from the same topic.
+
+This pattern is how Uber's Michelangelo, LinkedIn's Pro-ML, and most
+in-house "feature platforms" are built.
+
+## When **not** to use Kafka in your AI stack
+
+- **Synchronous chat agents.** A user is staring at the screen waiting for
+  an answer. Kafka adds latency budget you don't have. Direct API calls
+  with a tracing library on the side are the right pattern. Use Kafka for
+  the *trace events*, not the chat path.
+- **Single-model embedding job that runs once.** A Python script with
+  `concurrent.futures` is faster to write and runs in 10 minutes. Don't
+  build a streaming platform for a one-shot.
+- **You don't already have ops capacity for Kafka.** Running a stable
+  Kafka cluster is a real workload. If you don't already have one, start
+  with Redpanda Cloud or Confluent Cloud — managed Kafka removes the worst
+  of the operational pain and lets you focus on the AI part.
+
+## Related
+
+- [Consumer rebalances](/learn/consumer-rebalance) — long-running model
+  calls and rebalance protocols are an unhappy pair; cooperative-sticky is
+  the answer.
+- [ISR mechanics](/learn/isr-and-acks) — you almost always want `acks=all`
+  for embedding pipelines because the downstream cost of a lost event is
+  another API call.
+- [Exactly-once semantics](/learn/exactly-once) — useful when chaining
+  topics in an agent system to avoid duplicate tool calls.
+
+## Further reading
+
+- Yaniv Rodenski et al., "Kafka as the Backbone of Online Feature Stores"
+- "Streaming LLMs" — the emerging pattern for high-throughput agent fleets
+- LinkedIn engineering, "Operationalizing ML at LinkedIn"

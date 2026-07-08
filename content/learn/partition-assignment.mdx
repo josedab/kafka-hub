@@ -1,0 +1,101 @@
+---
+title: Partition assignment strategies
+description: Range, round-robin, sticky, cooperative-sticky — what each one computes and when to pick which.
+date: "2026-05-20"
+---
+
+The group leader picks one **assignor** to compute the partition-to-consumer
+mapping. Four ship with Kafka by default. They produce wildly different
+assignments for the same group, and the wrong choice can leave consumers
+idle, stateful workloads thrashing across rebalances, or both.
+
+This article is for picking one with intent. Drag the consumer / partition
+counts in the explorer below to feel each one.
+
+<AssignmentExplorer />
+
+## Range — the historical default
+
+For each subscribed topic, sort consumers by id, sort partitions by id,
+hand each consumer a contiguous slice. With 7 partitions and 3 consumers:
+
+```
+c-1: p0, p1, p2
+c-2: p3, p4
+c-3: p5, p6
+```
+
+Two problems:
+
+1. **Imbalanced when partitions don't divide evenly.** With 7/3 above, c-1
+   gets 3, others get 2. With 10/3, c-1 gets 4, others get 3.
+2. **Asymmetric across topics.** Consumers subscribed to multiple topics get
+   the low-index partitions of every topic, multiplying the imbalance.
+
+Range is the historical default because it's deterministic and trivial. In
+2026, only pick it for compatibility.
+
+## Round-robin — better balance, no stickiness
+
+Iterates partitions across all subscribed topics, handing one to each
+consumer in turn. The result is the best load distribution possible — at most
+one partition difference between any two consumers.
+
+The cost: the assignment can change completely on every rebalance. If your
+consumer holds per-partition state (a cache, a RocksDB store, a windowed
+aggregation), you pay to rebuild that state every time a single consumer
+joins or leaves.
+
+## Sticky — round-robin's balance with rebalance stability
+
+The sticky assignor solves the state-thrashing problem. It first preserves
+as much of the previous assignment as possible, then balances the residual
+partitions. The result:
+
+- Same load distribution as round-robin (within ±1 partition).
+- Minimizes the number of partitions that move on a rebalance — formally,
+  KIP-54 proves it's the optimum.
+
+Pick sticky over round-robin for any stateful consumer.
+
+## Cooperative-sticky — sticky over the cooperative rebalance protocol
+
+The steady-state assignment is identical to sticky. The difference is in
+*how* it gets there: cooperative-sticky uses the cooperative rebalance
+protocol (KIP-429), which only revokes the partitions that are actually
+moving. Sticky still does a stop-the-world revoke even though the eventual
+assignment overlaps the previous one.
+
+In Kafka 3.x this is the recommended default for new groups. See the
+[consumer-rebalance article](/learn/consumer-rebalance) for the migration
+path from eager.
+
+## Pick chart
+
+| Workload                                | Pick                    |
+| --------------------------------------- | ----------------------- |
+| Brand-new group, modern Kafka           | cooperative-sticky      |
+| Existing eager group, stateful          | sticky → cooperative-sticky (rolling) |
+| Brand-new group, stateless              | cooperative-sticky      |
+| Legacy compatibility constraint         | range or round-robin    |
+| Single-topic group, balance > stability | round-robin             |
+
+## Custom assignors
+
+You can implement `org.apache.kafka.clients.consumer.ConsumerPartitionAssignor`
+to compute anything you want — for example, rack-aware assignment that
+prefers same-AZ consumers and brokers. Kafka 3.5 ships
+`RackAwareRangeAssignor` if that's the only customization you need.
+
+Custom assignors are *deterministic, pure functions* of the inputs the
+coordinator passes in (member metadata, topic metadata, partition counts).
+Side effects, randomness or external I/O make rebalances non-reproducible
+across the group — the leader runs the assignor, every other consumer
+trusts the result, and divergence breaks the group.
+
+## Related
+
+- [Consumer rebalances — eager vs cooperative](/learn/consumer-rebalance) —
+  the protocol around the assignor.
+- [The controller and metadata propagation](/learn/controller-and-metadata) —
+  what triggers the rebalance in the first place.

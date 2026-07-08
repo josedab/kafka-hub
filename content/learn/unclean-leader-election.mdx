@@ -1,0 +1,114 @@
+---
+title: Quorum loss and unclean leader election
+description: What happens when every ISR replica dies, and the safety/availability trade-off Kafka asks you to make.
+date: "2026-05-17"
+scenarios: ["quorum-loss"]
+---
+
+The ISR protocol guarantees that if you produced with `acks=all`, your data
+lived on at least `min.insync.replicas` brokers before the leader acked. The
+moment **every** replica in the ISR is dead, Kafka has a hard choice: stay
+unavailable until one of those replicas comes back, or hand leadership to a
+known-stale replica and silently drop the unreplicated tail.
+
+That choice is controlled by exactly one setting: **`unclean.leader.election.enable`**.
+
+## The scenario
+
+You have a partition with `replication.factor=3` and `min.insync.replicas=2`.
+A short, plausible failure sequence:
+
+1. Broker 2 GCs for 12 seconds — its lag passes `replica.lag.time.max.ms`,
+   so the controller removes it from the ISR. ISR = `{0, 1}`.
+2. Producer keeps writing. Offsets 10–14 land on the leader (broker 0) and
+   replicate to broker 1 only.
+3. Broker 1's disk fails. ISR shrinks to `{0}` — leader-only.
+4. Broker 0 power-cycles. Now **no member of the last ISR is alive**. The
+   only replica that responds to fetch requests is broker 2, which last saw
+   offset 9.
+
+What should Kafka do? Step through both options below.
+
+<UncleanLeaderTimeline />
+
+## The trade-off, explicitly
+
+| Mode                                   | What you keep                              | What you lose                          |
+| -------------------------------------- | ------------------------------------------ | -------------------------------------- |
+| `unclean.leader.election.enable=false` | Durability — never serve uncommitted data  | Availability until ISR recovers        |
+| `unclean.leader.election.enable=true`  | Availability — partition comes back fast   | Any acked message past the stale offset|
+
+In the demo above, the unclean path **silently drops 5 acked messages**.
+The producer received an `acks=all` ack for those offsets. Downstream
+consumers may have already processed messages with those offsets (because
+the leader exposed them via the high water mark). When broker 2 takes over
+at offset 9, those consumers either get the **new** offsets 10+ (different
+messages with the same offset numbers — a correctness disaster) or skip
+them entirely, depending on how the consumer was positioned.
+
+Here's how Diagnose flags the unsafe broker setting inline:
+
+<DiagnoseSnippet
+  caption="Broker config"
+  onlyRules={["unclean-leader-election"]}
+  config={`unclean.leader.election.enable=true`}
+/>
+
+## Default it to `false`
+
+Apache Kafka's default since 0.11 is `false`. Override only if you have a
+very specific reason — typically a single-DC, availability-over-durability
+ingestion path where the data is replayable from an upstream system.
+
+Confluent Cloud, Redpanda Cloud and AWS MSK all default to `false` and
+recommend against changing it.
+
+## What "wait for ISR" actually looks like
+
+In the safe path, the partition is in **`Offline`** state. Producers get
+`NotLeaderOrFollowerException`. Consumers either time out or block. Your
+on-call alerting should fire on partition `Offline` count > 0, not on broker
+liveness — broker liveness can be fine while a specific partition is dead.
+
+Recovery is a sysadmin operation:
+
+1. Bring back **any one** of the replicas that was in the last ISR
+   (preferably the most-recent leader, broker 0 in our demo).
+2. The controller will elect it leader and the partition is back at offset 14.
+3. Broker 2, when it later recovers, will truncate its log to the leader
+   epoch and refetch.
+
+The `kafka-leader-election.sh` tool has a `--election-type UNCLEAN` mode if
+you decide you want to force the unsafe election manually — that's a
+deliberate, audited choice rather than a config that fires automatically
+under stress.
+
+## Watch it on a live (simulated) cluster
+
+The `/simulate` surface ships a `quorum-loss` scenario that walks through
+exactly this story on a deterministic in-browser cluster. Hit play and
+watch ISR collapse, then watch a produce request fail with
+`NotEnoughReplicasException`.
+
+<iframe
+  src="/simulate/embed/quorum-loss"
+  title="Quorum loss scenario"
+  className="not-prose my-6 h-[640px] w-full rounded-xl border border-fd-border"
+  loading="lazy"
+/>
+
+## Diagnostic rules
+
+The Diagnose surface ships a rule that flags this directly:
+
+- **`unclean-leader-election`** — flags `unclean.leader.election.enable=true`
+  with a danger severity.
+
+[Run a check](/diagnose) on your `server.properties` if you're unsure what
+your broker is set to.
+
+## Further reading
+
+- KIP-279 — leader epoch & follower truncation correctness
+- Apache Kafka docs, "Replication" → "Unclean leader election"
+- `kafka-leader-election.sh` source for the manual trigger

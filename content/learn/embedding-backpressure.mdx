@@ -1,0 +1,130 @@
+---
+title: "Backpressure in embedding pipelines"
+description: "What happens when your GPU-bound embedder can't keep up with Kafka. Three tactics that actually work."
+date: "2026-05-26"
+scenarios: ["slow-consumer"]
+---
+
+Embedding pipelines look simple until the GPU becomes the metronome:
+
+```text
+raw-text  →  embeddings.requests  →  embedder batches  →  vector DB
+```
+
+Kafka absorbs the mismatch. Producers want to publish every chunk immediately;
+embedders want fat batches; vector databases want polite upserts. Backpressure
+is the gap between those clocks.
+
+<EmbeddingBackpressureSim />
+
+## Where the pressure shows up
+
+**Producer side:** text workers publish into `embeddings.requests` faster than
+the embedder group drains it. Topic lag is the visible symptom; broker disk and
+future replay time are the hidden costs.
+
+**Consumer side:** the embedder may be fast enough, but the sink is not. Vector
+DB upserts often have per-index rate limits, hot-shard throttling, or batch-size
+ceilings. If commits wait for upsert success, Kafka lag grows behind the sink.
+
+**DLQ side:** failed records need `embeddings.dlq`, not an infinite retry loop
+inside the same partition. Poison text should not block clean records.
+
+```json
+{ "topic": "embeddings.requests.v1", "key": "document_id", "model": "bge-m3", "attempt": 1 }
+{ "topic": "embeddings.dlq.v1", "key": "document_id", "error_kind": "tokenizer_crash" }
+```
+
+## Sizing: batch size is not free throughput
+
+GPU encoders get cheaper per record as the batch grows, but latency moves the
+other direction. A batch of 64 may saturate the card; it also means the first
+record waits for 63 neighbors or a flush timeout.
+
+```properties
+max.poll.records=64
+max.poll.interval.ms=900000
+fetch.min.bytes=1048576
+fetch.max.wait.ms=250
+```
+
+Measure two curves: **GPU utilization** and **p95 record latency**. If the GPU
+is 40% utilized, increase `max.poll.records` or the batching window. If p95
+blows up while utilization is high, split by model or add another embedder.
+
+## Tactic 1: pace the poll loop
+
+Poll less when local lag is above target. Do not sleep inside the encode call;
+sleep before fetching more records.
+
+```ts
+const targetLocalQueue = 2_000;
+while (running) {
+  if (localQueue.size > targetLocalQueue) await delay(250);
+  else localQueue.push(...(await consumer.poll({ timeoutMs: 100 })));
+}
+```
+
+This protects process memory and gives the GPU a stable queue. It does not stop
+upstream producers; it makes consumer pressure explicit.
+
+## Tactic 2: pause hot partitions
+
+When one tenant or model floods the topic, pause only the partitions over
+budget. Resume when the local queue drains.
+
+```ts
+if (lagFor(partition) > 10_000) {
+  consumer.pause([{ topic: "embeddings.requests.v1", partitions: [partition] }]);
+}
+if (lagFor(partition) < 2_000) consumer.resume(pausedPartitions);
+```
+
+The group keeps heartbeating, the assignment stays stable, and already-fetched
+batches finish instead of being killed by a rebalance.
+
+## Tactic 3: make the producer batch politely
+
+Embedding requests are throughput work, not click-path work. Let producers
+coalesce records and avoid excessive in-flight reordering.
+
+```properties
+acks=all
+enable.idempotence=true
+compression.type=zstd
+linger.ms=20
+batch.size=131072
+max.in.flight.requests.per.connection=5
+```
+
+For strict ordering with retries, lower `max.in.flight.requests.per.connection`
+to `1`; for most embedding topics idempotence plus a stable key is enough.
+
+## Fan-out by model
+
+A single source topic can feed multiple model-specific embedding topics:
+
+```text
+docs.ingest
+  ├─ embeddings.requests.e5-large
+  ├─ embeddings.requests.bge-m3
+  └─ embeddings.requests.text-embedding-3-large
+```
+
+The router reads `docs.ingest`, picks a model, and writes to the matching topic.
+Each model gets its own partitions, group, GPU pool, and backpressure budget.
+Re-embedding with a new model becomes replay, not re-ingest.
+
+## Failure modes to design for
+
+- **Poison records** crash the tokenizer or model loader. Catch, annotate, and
+  write to `embeddings.dlq`; do not retry forever on the same partition.
+- **OOM during batch encode** means the batch was too large for that model and
+  sequence length. Split the batch and lower the configured ceiling.
+- **Vector DB rate limits** turn a healthy embedder into an infinite retry
+  machine. Use backoff, bounded attempts, and a DLQ for exhausted records.
+
+## Related
+- [Consumer rebalances](/learn/consumer-rebalance) — keep long GPU calls from causing stop-the-world group churn.
+- [ISR mechanics and acks semantics](/learn/isr-and-acks) — why expensive embedding records deserve `acks=all`.
+- [Kafka for AI engineers](/learn/kafka-for-ai) — the overview this article extends.

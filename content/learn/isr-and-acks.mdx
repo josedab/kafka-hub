@@ -1,0 +1,75 @@
+---
+title: ISR mechanics and acks semantics
+description: How Kafka decides which replicas count as "in-sync", and what each acks setting actually buys you.
+date: "2026-05-15"
+scenarios: ["isr-shrink"]
+---
+
+When you hear a Kafka engineer say "the durability story" they almost always
+mean the interplay between three settings: `replication.factor`,
+`min.insync.replicas`, and the producer's `acks`. The behavior is determined
+by a fourth, mostly invisible concept — the **in-sync replica set**, or ISR.
+
+This article walks through what the ISR actually is, how it changes, and how
+each `acks` value behaves under healthy and unhealthy conditions. There's an
+embedded simulator below so you can drag a follower out of sync and watch
+producers start failing.
+
+## The ISR set
+
+A topic-partition has `replication.factor` replicas. One of them is the
+**leader**; the others are **followers**. Followers fetch from the leader.
+
+A follower stays in the ISR set as long as it has fetched up to the leader's
+log end within `replica.lag.time.max.ms` (default 10 seconds). If it falls
+further behind — because the broker is GC'ing, the network is congested, the
+disk is saturated, or the broker is just down — the controller removes it
+from the ISR set. When it catches back up, it rejoins.
+
+The high water mark — the offset producers and consumers care about — is the
+**minimum log end** across the current ISR. That's why a slow follower stalls
+your consumers even though the leader is fine.
+
+## acks, in plain English
+
+| acks  | Leader waits for                | Worst case loss                                        |
+| ----- | ------------------------------- | ------------------------------------------------------ |
+| `0`   | nothing — fire and forget       | every message in flight                                |
+| `1`   | leader's own log append         | one message, if the leader crashes before replication  |
+| `all` | every replica currently in ISR  | zero, _if_ `min.insync.replicas` is set sensibly       |
+
+The trap people walk into is setting `acks=all` and leaving
+`min.insync.replicas=1`. The leader is then the only replica it has to wait
+for, so you pay the latency of `acks=all` and get the durability of `acks=1`.
+
+Here's how Diagnose flags this config inline:
+
+<DiagnoseSnippet
+  caption="Producer + broker config"
+  onlyRules={["acks-all-with-min-isr-1"]}
+  config={`acks=all
+min.insync.replicas=1`}
+/>
+
+## Try it
+
+Move a follower's lag past the 10-second threshold and you'll see it drop
+from the ISR set. Then try producing under each `acks` setting.
+
+<IsrSimulator />
+
+## Diagnostic rules that catch this in your config
+
+The Diagnose surface ships two rules tied directly to this concept:
+
+- **`acks-all-with-min-isr-1`** — flags the exact misconfiguration above
+- **`replication-factor-too-low`** — warns when default RF is below 3
+
+If you have a `server.properties` to hand, [run it through Diagnose](/diagnose).
+
+## Further reading
+
+- Apache Kafka design docs, "Replication"
+- Jun Rao, "Hardening Kafka Replication" — the source of much of the modern
+  ISR machinery
+- KIP-101 and KIP-279 for leader epoch and follower truncation correctness

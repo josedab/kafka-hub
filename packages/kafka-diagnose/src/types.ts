@@ -1,6 +1,7 @@
 export type Severity = "danger" | "warning" | "info";
 
 export type Category =
+  | "validation"
   | "broker"
   | "topic"
   | "producer"

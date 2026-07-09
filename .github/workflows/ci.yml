@@ -1,0 +1,72 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: typecheck · lint · test · build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11.13.0
+
+      - name: Use Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Test
+        run: pnpm test
+
+      - name: Build
+        run: pnpm build
+
+      - name: CLI package smoke test
+        shell: bash
+        run: |
+          set -euo pipefail
+          pack_dir="$(mktemp -d)"
+          install_dir="$(mktemp -d)"
+
+          pnpm --filter @kafka-hub/kafka-cli pack --pack-destination "$pack_dir"
+          npm install \
+            --prefix "$install_dir" \
+            --ignore-scripts \
+            --no-audit \
+            --no-fund \
+            "$pack_dir"/*.tgz
+
+          set +e
+          printf 'unclean.leader.election.enable=true\nacks=1\n' \
+            | "$install_dir/node_modules/.bin/kafka-hub" diagnose - --min warning
+          code=$?
+          set -e
+          if [ "$code" -ne 1 ]; then
+            echo "Expected CLI to exit 1 on danger findings, got $code"
+            exit 1
+          fi
+          echo "CLI exited 1 as expected"

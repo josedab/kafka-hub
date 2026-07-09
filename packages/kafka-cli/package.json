@@ -16,15 +16,15 @@
     "README.md"
   ],
   "scripts": {
-    "build": "esbuild src/cli.ts --bundle --platform=node --format=esm --target=node18 --outfile=dist/cli.js --sourcemap && tsc -p tsconfig.json",
+    "build": "esbuild src/cli.ts --bundle --platform=node --format=esm --target=node22 --outfile=dist/cli.js --sourcemap && tsc -p tsconfig.json",
     "diagnose": "node ./bin/kafka-hub.mjs diagnose",
     "test": "tsx --test src/*.test.ts",
     "prepack": "pnpm build"
   },
   "devDependencies": {
     "@kafka-hub/kafka-diagnose": "workspace:*",
-    "esbuild": "^0.28.0",
-    "tsx": "^4.19.2"
+    "esbuild": "^0.28.1",
+    "tsx": "^4.23.1"
   },
   "keywords": [
     "kafka",
@@ -39,6 +39,6 @@
     "directory": "packages/kafka-cli"
   },
   "engines": {
-    "node": ">=18"
+    "node": ">=22.0.0"
   }
 }

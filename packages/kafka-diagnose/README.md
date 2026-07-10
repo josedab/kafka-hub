@@ -1,58 +1,78 @@
 # @kafka-hub/kafka-diagnose
 
-Static, deterministic rule engine for Kafka broker / topic / producer /
-consumer `.properties` configuration. 36+ built-in rules covering the
-footguns that show up in production incidents.
+Deterministic static rule engine for Apache Kafka `.properties` files.
+Parses Java-style `.properties` text and runs 37 rules across 8 categories
+(validation, broker, topic, producer, consumer, security, transactions,
+performance).
 
-> No live cluster connection. No network. Parses text in, emits findings out.
+## Features
 
-> **Status:** workspace-ready, but not published to npm yet.
-
-## Categories
-
-- `broker` — `unclean.leader.election.enable`, `auto.create.topics.enable`, ...
-- `topic` — `min.insync.replicas` vs `replication.factor`, segment sizing, ...
-- `producer` — `acks=all` durability, idempotence, batch size & linger, ...
-- `consumer` — `enable.auto.commit` correctness, session/heartbeat tuning, ...
-- `transactions` — transactional.id stability, isolation level, ...
-- `security` — `PLAINTEXT` listeners, SASL+SSL ordering, ...
-- `performance` — compression, `num.network.threads`, ...
-
-Each finding has a severity (`danger` / `warning` / `info`), a title,
-plain-language detail, and an optional URL back to a Learn article.
-
-## Use from this repository
-
-```bash
-pnpm install
-pnpm --filter @kafka-hub/kafka-diagnose test
-```
+- **37 rules** with severity levels (danger, warning, info)
+- **8 categories** organized in separate files for maintainability
+- **20 uniquely fixable rules** with 22 fix paths (structured lossless patches)
+- **True lossless Java-properties preservation** — parse, patch, and serialize
+  preserving comments, blank lines, ordering, line continuations, escape
+  sequences, and per-line newline style
+- **Explicit duplicate/conflict behavior** — duplicate keys are detected;
+  patch operations targeting ambiguous keys surface explicit conflicts rather
+  than silently resolving
+- **Redaction** — best-effort, defense-in-depth detection of common secret
+  patterns (passwords, JAAS credentials, tokens, private keys, cloud
+  credentials, authentication fields, secret-like keys) applied before all
+  egress paths: URL/history/clipboard/download/network. Keystore/truststore
+  *locations* are not treated as secrets. Review sanitized output: unusual key
+  names, encodings, or formats may not be recognized.
+- **Egress safety** — `prepareForUrl`, `prepareForHistory`,
+  `prepareForJsonExport`, `prepareForLlm`, `prepareForClipboard`,
+  `prepareForPropertiesDownload`
+- **Optional LLM integration** — `prepareForLlm` sends best-effort sanitized
+  config text (not a parsed key/value object) to the server endpoint
+- **Framework-free** — runs in Node, browser, or Web Worker
 
 ## Usage
 
 ```ts
-import { evaluate } from "@kafka-hub/kafka-diagnose";
+import { evaluate, rules, allRules } from "@kafka-hub/kafka-diagnose";
 
-const report = evaluate(`
-  acks=1
-  enable.idempotence=false
-  retries=0
-`);
+const report = evaluate("acks=1\nmin.insync.replicas=1");
+// report.findings: DiagnosticFinding[]
+// report.parsedKeys: number
 
-console.log(report.stats); // { danger: N, warning: M, info: K }
-for (const f of report.findings) {
-  console.log(`[${f.severity}] ${f.title}`);
-}
+console.log(`${rules.length} rules, ${report.findings.length} findings`);
 ```
 
 ## API
 
-| Export | Kind | Purpose |
-| ------ | ---- | ------- |
-| `parseProperties(text)` | fn | `.properties` → `Record<string, string>` |
-| `evaluate(text, ruleset?)` | fn | Run all rules → `DiagnosticReport` |
-| `rules` | const | The built-in ruleset |
-| `Rule`, `Severity`, `Category`, `DiagnosticFinding`, `DiagnosticReport` | types | TS types |
+### `evaluate(input: string): DiagnosticReport`
+
+Parse `.properties` text and run all rules. Returns findings with severity,
+title, detail, category, ruleId, and optional fix/learnSlug/simulateSlug.
+
+### `parsePropertiesDocument(input: string): PropertiesDocument`
+
+Lossless parse preserving comments, blank lines, ordering, line
+continuations, and escape sequences.
+
+### `applyPatches(doc, operations): PatchResult`
+
+Apply structured fix operations (set, replace, remove) to a document.
+Returns `{ ok: true, document, appliedCount }` or
+`{ ok: false, conflicts }` for duplicate-key ambiguity, contradictory
+operations, missing keys, or value mismatches.
+
+### `prepareForUrl(input) / prepareForHistory(input) / ...`
+
+Apply the same common-pattern redaction pipeline at each egress boundary.
+The result must still be reviewed before export or sharing.
+`prepareForJsonExport(input, { generatedAt })` also accepts a stable timestamp
+(or injectable `now` clock) when identical full JSON output is required;
+without it, export content is stable but `generatedAt` uses wall time.
+
+## Tests
+
+```bash
+pnpm test    # 122 node:test cases
+```
 
 ## License
 

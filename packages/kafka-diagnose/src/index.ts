@@ -10,3 +10,11 @@
 
 export * from "./engine";
 export type { Rule, Severity, Category, DiagnosticFinding, DiagnosticReport } from "./types";
+export * from "./properties-document";
+export * from "./patch";
+export * from "./redact";
+export * from "./egress";
+export * from "./observability";
+export * from "./rule-metadata";
+export { allRules } from "./rules/index";
+export type { RuleWithFix, FindingWithFix } from "./rules/index";

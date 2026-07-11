@@ -3,6 +3,12 @@
  */
 
 import {
+  consumerCrash,
+  consumerJoin,
+  consumerLeave,
+  consumerRestart,
+  consumerRollingRestartStep,
+  consumerScaleOut,
   healPartition,
   inducePartition,
   killBroker,
@@ -47,5 +53,19 @@ export function runOp(state: ClusterState, op: ScenarioOp): OpRunResult {
       };
     case "healPartition":
       return { state: healPartition(state), ticksConsumed: 1 };
+    // ── consumer group operations ──
+    case "consumerJoin":
+      return { state: consumerJoin(state, op.groupId, op.memberId), ticksConsumed: 1 };
+    case "consumerLeave":
+      return { state: consumerLeave(state, op.groupId, op.memberId), ticksConsumed: 1 };
+    case "consumerCrash":
+      return { state: consumerCrash(state, op.groupId, op.memberId), ticksConsumed: 1 };
+    case "consumerRestart":
+      return { state: consumerRestart(state, op.groupId, op.memberId), ticksConsumed: 1 };
+    case "consumerScaleOut":
+      return { state: consumerScaleOut(state, op.groupId, op.memberIds), ticksConsumed: 1 };
+    case "consumerRollingRestartStep":
+      // Rolling restart is an atomic leave+rejoin: consumes 2 ticks internally
+      return { state: consumerRollingRestartStep(state, op.groupId, op.memberId), ticksConsumed: 2 };
   }
 }

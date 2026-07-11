@@ -9,9 +9,21 @@
  *
  * Scenarios are pure data. The worker / UI replays them via the simulator
  * core. This makes them embed- and link-friendly.
+ *
+ * Consumer group scenarios use the two-axis model:
+ * - groupProtocol: "classic" | "consumer"
+ * - classicAssignmentBehavior: "eager" | "cooperative" (classic only)
+ *
+ * The assignor axis is explicit:
+ * - Classic eager defaults to "range".
+ * - Classic cooperative defaults to "cooperative-sticky".
+ * - Consumer protocol (KIP-848) always uses "uniform" (server-side).
+ *
+ * Legacy `protocol: "eager" | "cooperative"` is accepted for backward
+ * compatibility and auto-migrated to the new model by the engine.
  */
 
-import type { ClusterOptions } from "./engine";
+import type { ClusterOptions, GroupProtocol, ClassicAssignmentBehavior, Assignor } from "./engine";
 
 export type ScenarioOp =
   | { kind: "wait"; ticks: number; note?: string }
@@ -19,13 +31,15 @@ export type ScenarioOp =
   | { kind: "killBroker"; brokerId: number; note?: string }
   | { kind: "reviveBroker"; brokerId: number; note?: string }
   | { kind: "shrinkIsrLag"; brokerId: number; lagMs: number; note?: string }
-  | {
-      kind: "inducePartition";
-      groupA: number[];
-      groupB: number[];
-      note?: string;
-    }
-  | { kind: "healPartition"; note?: string };
+  | { kind: "inducePartition"; groupA: number[]; groupB: number[]; note?: string }
+  | { kind: "healPartition"; note?: string }
+  // ── consumer group operations ──
+  | { kind: "consumerJoin"; groupId: string; memberId: string; note?: string }
+  | { kind: "consumerLeave"; groupId: string; memberId: string; note?: string }
+  | { kind: "consumerCrash"; groupId: string; memberId: string; note?: string }
+  | { kind: "consumerRestart"; groupId: string; memberId: string; note?: string }
+  | { kind: "consumerScaleOut"; groupId: string; memberIds: string[]; note?: string }
+  | { kind: "consumerRollingRestartStep"; groupId: string; memberId: string; note?: string };
 
 export interface Scenario {
   slug: string;
@@ -35,13 +49,20 @@ export interface Scenario {
   consumerGroup?: {
     id: string;
     consumerIds: string[];
-    protocol: "eager" | "cooperative";
+    /** @deprecated Use groupProtocol + classicAssignmentBehavior. */
+    protocol?: "eager" | "cooperative";
+    groupProtocol?: GroupProtocol;
+    classicAssignmentBehavior?: ClassicAssignmentBehavior;
+    /** Explicit assignor. Defaults: eager→"range", cooperative→"cooperative-sticky", consumer→"uniform". */
+    assignor?: Assignor;
     consumeRatePerTick: number;
   };
   script: ScenarioOp[];
 }
 
 export const SCENARIOS: Record<string, Scenario> = {
+  // ── existing scenarios (preserved) ──
+
   "quorum-loss": {
     slug: "quorum-loss",
     title: "Quorum loss — kill two brokers in an RF=3 cluster",
@@ -88,6 +109,9 @@ export const SCENARIOS: Record<string, Scenario> = {
       id: "downstream",
       consumerIds: ["c-1"],
       protocol: "cooperative",
+      groupProtocol: "classic",
+      classicAssignmentBehavior: "cooperative",
+      assignor: "cooperative-sticky",
       consumeRatePerTick: 1,
     },
     script: [
@@ -159,6 +183,184 @@ export const SCENARIOS: Record<string, Scenario> = {
       { kind: "healPartition", note: "heal" },
       { kind: "wait", ticks: 2, note: "ISR reconciles" },
       { kind: "produce", partition: 0, value: "post-heal" },
+    ],
+  },
+
+  // ── KIP-848 rebalance lab scenarios ──
+
+  "rebalance-eager-classic": {
+    slug: "rebalance-eager-classic",
+    title: "Eager classic rebalance — stop-the-world on every membership change",
+    blurb:
+      "Classic group protocol with eager assignment (range assignor): every rebalance pauses ALL consumers, revokes all partitions, then reassigns. Watch processing stop across the board on every join, leave, or crash.",
+    cluster: {
+      brokerCount: 3,
+      partitionCount: 6,
+      replicationFactor: 3,
+      minInsyncReplicas: 2,
+      producerAcks: "all",
+    },
+    consumerGroup: {
+      id: "eager-group",
+      consumerIds: ["c-1", "c-2"],
+      groupProtocol: "classic",
+      classicAssignmentBehavior: "eager",
+      assignor: "range",
+      consumeRatePerTick: 2,
+    },
+    script: [
+      // Produce some records to show lag behavior
+      { kind: "produce", partition: 0, value: "evt-1", note: "produce records across partitions" },
+      { kind: "produce", partition: 1, value: "evt-2" },
+      { kind: "produce", partition: 2, value: "evt-3" },
+      { kind: "produce", partition: 3, value: "evt-4" },
+      { kind: "produce", partition: 4, value: "evt-5" },
+      { kind: "produce", partition: 5, value: "evt-6" },
+      { kind: "wait", ticks: 2, note: "consumers process at 2 rec/tick" },
+
+      // Scale out — stop-the-world
+      { kind: "consumerScaleOut", groupId: "eager-group", memberIds: ["c-3"], note: "scale out c-3 — ALL members pause (eager)" },
+      { kind: "wait", ticks: 2, note: "observe pause tick then resume" },
+
+      // More records
+      { kind: "produce", partition: 0, value: "evt-7" },
+      { kind: "produce", partition: 2, value: "evt-8" },
+      { kind: "wait", ticks: 1 },
+
+      // Graceful leave
+      { kind: "consumerLeave", groupId: "eager-group", memberId: "c-3", note: "graceful leave c-3 — ALL members pause again" },
+      { kind: "wait", ticks: 2, note: "pause tick then resume" },
+
+      // Crash
+      { kind: "produce", partition: 0, value: "evt-9", note: "produce before crash" },
+      { kind: "wait", ticks: 1 },
+      { kind: "consumerCrash", groupId: "eager-group", memberId: "c-2", note: "crash c-2 — elevated duplicate risk, no commit" },
+      { kind: "wait", ticks: 2, note: "pause tick, then new owner replays from last committed" },
+
+      // Restart
+      { kind: "consumerRestart", groupId: "eager-group", memberId: "c-2", note: "restart c-2 — another stop-the-world" },
+      { kind: "wait", ticks: 2 },
+
+      // Rolling restart
+      { kind: "consumerRollingRestartStep", groupId: "eager-group", memberId: "c-1", note: "rolling restart c-1 — two stop-the-worlds (2 ticks)" },
+      { kind: "wait", ticks: 2, note: "final state" },
+    ],
+  },
+
+  "rebalance-cooperative-classic": {
+    slug: "rebalance-cooperative-classic",
+    title: "Cooperative classic rebalance — only moved partitions revoked",
+    blurb:
+      "Classic group protocol with cooperative-sticky assignor: only partitions that move are revoked. Unaffected consumers keep processing without pause. Compare to eager to see the difference.",
+    cluster: {
+      brokerCount: 3,
+      partitionCount: 6,
+      replicationFactor: 3,
+      minInsyncReplicas: 2,
+      producerAcks: "all",
+    },
+    consumerGroup: {
+      id: "coop-group",
+      consumerIds: ["c-1", "c-2"],
+      groupProtocol: "classic",
+      classicAssignmentBehavior: "cooperative",
+      assignor: "cooperative-sticky",
+      consumeRatePerTick: 2,
+    },
+    script: [
+      // Produce records
+      { kind: "produce", partition: 0, value: "evt-1", note: "produce records across partitions" },
+      { kind: "produce", partition: 1, value: "evt-2" },
+      { kind: "produce", partition: 2, value: "evt-3" },
+      { kind: "produce", partition: 3, value: "evt-4" },
+      { kind: "produce", partition: 4, value: "evt-5" },
+      { kind: "produce", partition: 5, value: "evt-6" },
+      { kind: "wait", ticks: 2, note: "consumers process at 2 rec/tick" },
+
+      // Scale out — cooperative: only moved partitions revoked
+      { kind: "consumerScaleOut", groupId: "coop-group", memberIds: ["c-3"], note: "scale out c-3 — only moved partitions revoked (cooperative-sticky)" },
+      { kind: "wait", ticks: 2, note: "unaffected consumers keep processing" },
+
+      // More records
+      { kind: "produce", partition: 0, value: "evt-7" },
+      { kind: "produce", partition: 2, value: "evt-8" },
+      { kind: "wait", ticks: 1 },
+
+      // Graceful leave
+      { kind: "consumerLeave", groupId: "coop-group", memberId: "c-3", note: "graceful leave c-3 — only its partitions redistributed" },
+      { kind: "wait", ticks: 2, note: "other consumers unaffected" },
+
+      // Crash
+      { kind: "produce", partition: 0, value: "evt-9", note: "produce before crash" },
+      { kind: "wait", ticks: 1 },
+      { kind: "consumerCrash", groupId: "coop-group", memberId: "c-2", note: "crash c-2 — elevated duplicate risk" },
+      { kind: "wait", ticks: 2 },
+
+      // Restart
+      { kind: "consumerRestart", groupId: "coop-group", memberId: "c-2", note: "restart c-2 — cooperative revoke of moved partitions only" },
+      { kind: "wait", ticks: 2 },
+
+      // Rolling restart
+      { kind: "consumerRollingRestartStep", groupId: "coop-group", memberId: "c-1", note: "rolling restart c-1 — cooperative, minimal disruption (2 ticks)" },
+      { kind: "wait", ticks: 2, note: "final state" },
+    ],
+  },
+
+  "rebalance-consumer-protocol": {
+    slug: "rebalance-consumer-protocol",
+    title: "KIP-848 consumer protocol — broker-coordinated incremental reconciliation",
+    blurb:
+      "The new KIP-848 consumer protocol: the broker assigns partitions using group/member epochs and the server-side uniform assignor. No stop-the-world pause, no classic cooperative assignor — this is a fundamentally different protocol. Watch reconciliation state transition from reconciling to stable.",
+    cluster: {
+      brokerCount: 3,
+      partitionCount: 6,
+      replicationFactor: 3,
+      minInsyncReplicas: 2,
+      producerAcks: "all",
+    },
+    consumerGroup: {
+      id: "kip848-group",
+      consumerIds: ["c-1", "c-2"],
+      groupProtocol: "consumer",
+      assignor: "uniform",
+      consumeRatePerTick: 2,
+    },
+    script: [
+      // Produce records
+      { kind: "produce", partition: 0, value: "evt-1", note: "produce records" },
+      { kind: "produce", partition: 1, value: "evt-2" },
+      { kind: "produce", partition: 2, value: "evt-3" },
+      { kind: "produce", partition: 3, value: "evt-4" },
+      { kind: "produce", partition: 4, value: "evt-5" },
+      { kind: "produce", partition: 5, value: "evt-6" },
+      { kind: "wait", ticks: 2, note: "consumers process via broker-coordinated assignment" },
+
+      // Scale out — broker coordinates via epochs
+      { kind: "consumerScaleOut", groupId: "kip848-group", memberIds: ["c-3"], note: "scale out c-3 — broker bumps group epoch, partitions pending reconciliation" },
+      { kind: "wait", ticks: 2, note: "step() activates pending → assigned, state → stable" },
+
+      // More records
+      { kind: "produce", partition: 0, value: "evt-7" },
+      { kind: "produce", partition: 2, value: "evt-8" },
+      { kind: "wait", ticks: 1 },
+
+      // Graceful leave
+      { kind: "consumerLeave", groupId: "kip848-group", memberId: "c-3", note: "graceful leave c-3 — broker reassigns via new epoch" },
+      { kind: "wait", ticks: 2, note: "incremental reconciliation, no global pause" },
+
+      // Crash
+      { kind: "produce", partition: 0, value: "evt-9" },
+      { kind: "wait", ticks: 1 },
+      { kind: "consumerCrash", groupId: "kip848-group", memberId: "c-2", note: "crash c-2 — elevated duplicate risk (no graceful commit)" },
+      { kind: "wait", ticks: 2, note: "broker detects, bumps epoch, reassigns" },
+
+      // Restart
+      { kind: "consumerRestart", groupId: "kip848-group", memberId: "c-2", note: "restart c-2 — broker reconciles via epoch" },
+      { kind: "wait", ticks: 2 },
+
+      // Rolling restart
+      { kind: "consumerRollingRestartStep", groupId: "kip848-group", memberId: "c-1", note: "rolling restart c-1 — incremental reconciliation per epoch (2 ticks)" },
+      { kind: "wait", ticks: 2, note: "final state" },
     ],
   },
 };

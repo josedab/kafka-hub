@@ -1,0 +1,59 @@
+{
+  "name": "@kafka-hub/incident-parser",
+  "version": "0.1.0",
+  "description": "Offline incident evidence parser and triage engine for Apache Kafka. Accepts plain text or JSON evidence, auto-detects failure signatures, and returns structured hypotheses with confidence scores.",
+  "license": "MIT",
+  "author": "Jose David Baena <josedab@gmail.com>",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "import": "./src/index.ts",
+      "default": "./src/index.ts"
+    }
+  },
+  "publishConfig": {
+    "main": "./dist/index.js",
+    "types": "./dist/index.d.ts",
+    "exports": {
+      ".": {
+        "types": "./dist/index.d.ts",
+        "import": "./dist/index.js",
+        "default": "./dist/index.js"
+      }
+    }
+  },
+  "files": [
+    "dist",
+    "src",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "test": "tsx --test src/*.test.ts"
+  },
+  "dependencies": {
+    "@kafka-hub/kafka-diagnose": "workspace:*"
+  },
+  "devDependencies": {
+    "tsx": "^4.23.1"
+  },
+  "keywords": [
+    "kafka",
+    "incident",
+    "triage",
+    "parser",
+    "diagnostics",
+    "offline"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/josedab/kafka-hub.git",
+    "directory": "packages/incident-parser"
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  }
+}

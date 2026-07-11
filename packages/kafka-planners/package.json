@@ -1,0 +1,132 @@
+{
+  "name": "@kafka-hub/kafka-planners",
+  "version": "0.1.0",
+  "description": "Focused planning/triage engines for Apache Kafka operational scenarios. Each subpath export covers one scenario (e.g., consumer lag triage, capacity planning, listener topology). Framework-free, deterministic, browser/Node compatible.",
+  "license": "MIT",
+  "author": "Jose David Baena <josedab@gmail.com>",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "import": "./src/index.ts",
+      "default": "./src/index.ts"
+    },
+    "./lag": {
+      "types": "./src/lag/index.ts",
+      "import": "./src/lag/index.ts",
+      "default": "./src/lag/index.ts"
+    },
+    "./capacity": {
+      "types": "./src/capacity/index.ts",
+      "import": "./src/capacity/index.ts",
+      "default": "./src/capacity/index.ts"
+    },
+    "./listeners": {
+      "types": "./src/listeners/index.ts",
+      "import": "./src/listeners/index.ts",
+      "default": "./src/listeners/index.ts"
+    },
+    "./message-size": {
+      "types": "./src/message-size/index.ts",
+      "import": "./src/message-size/index.ts",
+      "default": "./src/message-size/index.ts"
+    },
+    "./kraft": {
+      "types": "./src/kraft/index.ts",
+      "import": "./src/kraft/index.ts",
+      "default": "./src/kraft/index.ts"
+    },
+    "./dr": {
+      "types": "./src/dr/index.ts",
+      "import": "./src/dr/index.ts",
+      "default": "./src/dr/index.ts"
+    }
+  },
+  "publishConfig": {
+    "main": "./dist/index.js",
+    "types": "./dist/index.d.ts",
+    "exports": {
+      ".": {
+        "types": "./dist/index.d.ts",
+        "import": "./dist/index.js",
+        "default": "./dist/index.js"
+      },
+      "./lag": {
+        "types": "./dist/lag/index.d.ts",
+        "import": "./dist/lag/index.js",
+        "default": "./dist/lag/index.js"
+      },
+      "./capacity": {
+        "types": "./dist/capacity/index.d.ts",
+        "import": "./dist/capacity/index.js",
+        "default": "./dist/capacity/index.js"
+      },
+      "./listeners": {
+        "types": "./dist/listeners/index.d.ts",
+        "import": "./dist/listeners/index.js",
+        "default": "./dist/listeners/index.js"
+      },
+      "./message-size": {
+        "types": "./dist/message-size/index.d.ts",
+        "import": "./dist/message-size/index.js",
+        "default": "./dist/message-size/index.js"
+      },
+      "./kraft": {
+        "types": "./dist/kraft/index.d.ts",
+        "import": "./dist/kraft/index.js",
+        "default": "./dist/kraft/index.js"
+      },
+      "./dr": {
+        "types": "./dist/dr/index.d.ts",
+        "import": "./dist/dr/index.js",
+        "default": "./dist/dr/index.js"
+      }
+    }
+  },
+  "files": [
+    "dist",
+    "src",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "test": "tsx --test src/lag/*.test.ts src/capacity/*.test.ts src/listeners/*.test.ts src/message-size/*.test.ts src/kraft/*.test.ts src/dr/*.test.ts"
+  },
+  "dependencies": {
+    "@kafka-hub/kafka-diagnose": "workspace:*"
+  },
+  "devDependencies": {
+    "tsx": "^4.23.1"
+  },
+  "keywords": [
+    "kafka",
+    "consumer-lag",
+    "capacity-planning",
+    "listener-topology",
+    "n-1-headroom",
+    "triage",
+    "planner",
+    "observability",
+    "deterministic",
+    "offline",
+    "message-size",
+    "kraft",
+    "zookeeper-migration",
+    "kafka-4x",
+    "disaster-recovery",
+    "dr-planning",
+    "rpo",
+    "rto",
+    "failover"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/josedab/kafka-hub.git",
+    "directory": "packages/kafka-planners"
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  }
+}

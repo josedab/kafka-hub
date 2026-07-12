@@ -12,9 +12,13 @@
  */
 
 import { readFile } from "node:fs/promises";
-import { evaluate, type DiagnosticFinding, type Severity } from "@kafka-hub/kafka-diagnose";
+import { evaluate, rules, type DiagnosticFinding, type Severity } from "@kafka-hub/kafka-diagnose";
+import { createRequire } from "node:module";
 
-const VERSION = "0.1.0";
+const require = createRequire(import.meta.url);
+const pkg = require("../package.json") as { version: string };
+const VERSION = pkg.version;
+const RULE_COUNT = rules.length;
 
 const HELP = `kafka-hub ${VERSION}
 
@@ -23,7 +27,7 @@ USAGE
   kafka-hub diagnose - [--json] [--min <severity>]
 
 COMMANDS
-  diagnose   Lint a Kafka .properties file against 36+ built-in rules.
+  diagnose   Lint a Kafka .properties file against ${RULE_COUNT} built-in rules.
 
 OPTIONS
   --json              Print the full JSON report (suitable for CI / jq).
@@ -154,7 +158,7 @@ function printReport(
     process.stdout.write(`  ${f.detail}\n`);
     if (f.learnSlug) {
       process.stdout.write(
-        `  ${c(C.dim, "→ https://kafka-hub.dev/learn/" + f.learnSlug)}\n`,
+        `  ${c(C.dim, "→ /learn/" + f.learnSlug)}\n`,
       );
     }
     process.stdout.write("\n");

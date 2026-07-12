@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import Script from "next/script";
 import { RootProvider } from "fumadocs-ui/provider/next";
 import { site } from "@/lib/site";
+import { CANONICAL_ORIGIN } from "@/lib/canonical-origin";
 import "./globals.css";
 
 const plausibleDomain = process.env.NEXT_PUBLIC_PLAUSIBLE_DOMAIN;
@@ -12,7 +13,7 @@ export const metadata: Metadata = {
     template: `%s · ${site.shortName}`,
   },
   description: site.description,
-  metadataBase: new URL(site.url),
+  metadataBase: new URL(CANONICAL_ORIGIN),
   alternates: {
     types: {
       "application/rss+xml": [

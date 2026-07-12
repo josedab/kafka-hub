@@ -1,4 +1,5 @@
 import { source } from "@/lib/source";
+import { CANONICAL_ORIGIN } from "@/lib/canonical-origin";
 import { site } from "@/lib/site";
 
 export const dynamic = "force-static";
@@ -18,7 +19,7 @@ function getDate(page: { data: { date?: string } }): Date {
 }
 
 export async function GET() {
-  const baseUrl = site.url.replace(/\/$/, "");
+  const baseUrl = CANONICAL_ORIGIN;
   const pages = source
     .getPages()
     .filter((p) => p.slugs.length > 0)

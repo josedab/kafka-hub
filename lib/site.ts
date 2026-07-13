@@ -1,3 +1,5 @@
+import { CANONICAL_ORIGIN } from "./canonical-origin";
+
 export const site = {
   name: "Kafka Engineering Hub",
   shortName: "Kafka Hub",
@@ -5,7 +7,7 @@ export const site = {
     "Interactive learning, diagnostics, runbooks, references, and an in-browser simulator for Kafka engineers.",
   description:
     "Open-source resource for engineers working with Apache Kafka. Interactive articles on internals, a configuration diagnostic engine, incident runbooks, reference catalogs, and a deterministic in-browser broker simulator.",
-  url: "https://kafka-hub.example.com",
+  url: CANONICAL_ORIGIN,
   repo: "https://github.com/josedab/kafka-hub",
   author: "Jose David Baena",
   surfaces: [
@@ -50,6 +52,13 @@ export const site = {
       blurb:
         "A searchable KIP index for protocol, replication, transactions, KRaft, and consumer group changes.",
       href: "/kips",
+    },
+    {
+      slug: "workbench",
+      title: "Workbench",
+      blurb:
+        "Interactive triage and analysis tools for Kafka incidents. Paste evidence, get structured hypotheses.",
+      href: "/workbench",
     },
   ],
 } as const;

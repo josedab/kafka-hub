@@ -2,9 +2,9 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { AlertTriangle, ArrowRight, BookOpen, FlaskConical } from "lucide-react";
-import { SiteShell } from "@/components/site-shell";
 import { Badge } from "@/components/ui/badge";
 import { cheatsheets, type Cheatsheet } from "@/lib/cheatsheet-data";
+import { site } from "@/lib/site";
 import { PrintButton } from "./print-button";
 
 type Params = { slug: string };
@@ -146,8 +146,7 @@ export default async function CheatsheetPage(props: { params: Promise<Params> })
   if (!sheet) notFound();
 
   return (
-    <SiteShell>
-      <article className="cheatsheet-print-target relative overflow-hidden bg-fd-background">
+    <article className="cheatsheet-print-target relative overflow-hidden bg-fd-background">
         <div aria-hidden className="pointer-events-none absolute inset-0 -z-10 surface-grid opacity-40" />
 
         <header className="border-b border-fd-border bg-fd-muted/30">
@@ -207,10 +206,9 @@ export default async function CheatsheetPage(props: { params: Promise<Params> })
           </section>
 
           <footer className="border-t border-fd-border pt-4 font-mono text-[11px] uppercase tracking-[0.18em] text-fd-muted-foreground">
-            Generated from kafka-hub.dev/learn/{sheet.slug}
+            Generated from {site.url}/learn/{sheet.slug}
           </footer>
         </div>
-      </article>
-    </SiteShell>
+    </article>
   );
 }

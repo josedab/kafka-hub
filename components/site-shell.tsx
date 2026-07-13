@@ -1,27 +1,19 @@
 "use client";
 
-import type { ReactNode } from "react";
+import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import { Moon, Search, Sun } from "lucide-react";
+import { usePathname } from "next/navigation";
+import { Menu, Moon, Search, Sun, X } from "lucide-react";
 import { useSearchContext } from "fumadocs-ui/contexts/search";
 import { useTheme } from "fumadocs-ui/provider/base";
 import { site } from "@/lib/site";
+import { NAV_LINKS } from "@/lib/nav-links";
 import { cn } from "@/lib/cn";
 
-const links = [
-  { href: "/learn", label: "Learn" },
-  { href: "/diagnose", label: "Diagnose" },
-  { href: "/simulate", label: "Simulate" },
-  { href: "/runbooks", label: "Runbooks" },
-  { href: "/errors", label: "Errors" },
-  { href: "/kips", label: "KIPs" },
-];
+/* ── Theme ──────────────────────────────────────────────────────── */
 
 const themeModes = ["light", "dark", "system"] as const;
 type ThemeMode = (typeof themeModes)[number];
-
-const headerActionClassName =
-  "inline-flex items-center justify-center gap-1.5 rounded-md border border-fd-border px-2.5 py-1.5 text-fd-muted-foreground transition-colors hover:bg-fd-accent hover:text-fd-foreground disabled:pointer-events-none disabled:opacity-50 sm:px-3";
 
 function isThemeMode(value: string | undefined): value is ThemeMode {
   return value === "light" || value === "dark" || value === "system";
@@ -30,9 +22,11 @@ function isThemeMode(value: string | undefined): value is ThemeMode {
 function getNextThemeMode(value: string | undefined): ThemeMode {
   const current = isThemeMode(value) ? value : "system";
   const index = themeModes.indexOf(current);
-
   return themeModes[(index + 1) % themeModes.length];
 }
+
+const headerActionClassName =
+  "inline-flex min-h-[44px] min-w-[44px] items-center justify-center gap-1.5 rounded-md border border-fd-border px-2.5 py-1.5 text-fd-muted-foreground transition-colors hover:bg-fd-accent hover:text-fd-foreground disabled:pointer-events-none disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-fd-ring";
 
 function ThemeToggle() {
   const { resolvedTheme, setTheme, theme } = useTheme();
@@ -44,19 +38,17 @@ function ThemeToggle() {
   return (
     <button
       type="button"
-      className={cn(headerActionClassName, "px-2.5")}
+      className={headerActionClassName}
       onClick={() => setTheme(nextTheme)}
-      aria-label={`Cycle theme from ${currentTheme} to ${nextTheme}. Currently resolved as ${resolvedLabel}.`}
+      aria-label={`Theme: ${currentTheme}. Switch to ${nextTheme}`}
     >
       <ThemeIcon className="size-4" aria-hidden />
-      <span className="sr-only">Cycle color theme</span>
     </button>
   );
 }
 
 function SearchButton() {
   const { enabled, hotKey, open, setOpenSearch } = useSearchContext();
-
   if (!enabled) return null;
 
   return (
@@ -101,7 +93,92 @@ function GitHubMark({ className }: { className?: string }) {
   );
 }
 
+/* ── Mobile Menu ────────────────────────────────────────────────── */
+
+function MobileMenu({
+  isOpen,
+  onClose,
+  triggerRef,
+}: {
+  isOpen: boolean;
+  onClose: () => void;
+  triggerRef: React.RefObject<HTMLButtonElement | null>;
+}) {
+  const pathname = usePathname();
+  const firstLinkRef = useRef<HTMLAnchorElement>(null);
+
+  // Focus first link on open
+  useEffect(() => {
+    if (isOpen) {
+      requestAnimationFrame(() => firstLinkRef.current?.focus());
+    }
+  }, [isOpen]);
+
+  // Escape to close
+  useEffect(() => {
+    if (!isOpen) return;
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        onClose();
+        triggerRef.current?.focus();
+      }
+    };
+    document.addEventListener("keydown", handler);
+    return () => document.removeEventListener("keydown", handler);
+  }, [isOpen, onClose, triggerRef]);
+
+  if (!isOpen) return null;
+
+  function handleLinkClick() {
+    onClose();
+    triggerRef.current?.focus();
+  }
+
+  return (
+    <nav
+      id="mobile-nav"
+      className="absolute left-0 right-0 top-full z-50 border-b border-fd-border bg-fd-background shadow-lg lg:hidden"
+      aria-label="Mobile navigation"
+    >
+      <ul className="mx-auto flex max-w-6xl flex-col px-6 py-4">
+        {NAV_LINKS.map((link, index) => {
+          const isActive =
+            pathname === link.url || pathname.startsWith(link.url + "/");
+          return (
+            <li key={link.url}>
+              <Link
+                ref={index === 0 ? firstLinkRef : undefined}
+                href={link.url}
+                onClick={handleLinkClick}
+                className={cn(
+                  "flex min-h-[44px] items-center rounded-md px-3 text-sm font-medium transition-colors",
+                  isActive
+                    ? "bg-fd-accent text-fd-foreground"
+                    : "text-fd-muted-foreground hover:bg-fd-accent hover:text-fd-foreground",
+                )}
+                {...(isActive ? { "aria-current": "page" as const } : {})}
+              >
+                {link.text}
+              </Link>
+            </li>
+          );
+        })}
+      </ul>
+    </nav>
+  );
+}
+
+/* ── Header ─────────────────────────────────────────────────────── */
+
 export function SiteHeader({ className }: { className?: string }) {
+  const pathname = usePathname();
+  const [mobileOpen, setMobileOpen] = useState(false);
+  const menuTriggerRef = useRef<HTMLButtonElement>(null);
+
+  const closeMobile = useCallback(() => setMobileOpen(false), []);
+
+
+
   return (
     <header
       className={cn(
@@ -109,10 +186,10 @@ export function SiteHeader({ className }: { className?: string }) {
         className,
       )}
     >
-      <div className="mx-auto flex h-14 w-full max-w-6xl items-center justify-between px-6">
+      <div className="mx-auto flex h-14 w-full max-w-6xl items-center justify-between gap-2 px-4 sm:px-6">
         <Link
           href="/"
-          className="flex items-center gap-2 text-sm font-semibold tracking-tight"
+          className="flex shrink-0 items-center gap-2 text-sm font-semibold tracking-tight"
         >
           <span
             aria-hidden
@@ -123,35 +200,72 @@ export function SiteHeader({ className }: { className?: string }) {
           {site.shortName}
         </Link>
 
-        <nav className="flex items-center gap-1 text-sm">
-          {links.map((l) => (
-            <Link
-              key={l.href}
-              href={l.href}
-              className="rounded-md px-3 py-1.5 text-fd-muted-foreground transition-colors hover:bg-fd-accent hover:text-fd-foreground"
-            >
-              {l.label}
-            </Link>
-          ))}
-          <div className="ml-2 flex items-center gap-1">
-            <ThemeToggle />
-            <SearchButton />
-            <a
-              href={site.repo}
-              target="_blank"
-              rel="noreferrer noopener"
-              className={headerActionClassName}
-              aria-label="GitHub repository"
-            >
-              <GitHubMark className="size-4" />
-              <span className="hidden sm:inline">GitHub</span>
-            </a>
-          </div>
+        {/* Desktop navigation — shown only at lg where all links fit */}
+        <nav className="hidden items-center gap-1 text-sm lg:flex" aria-label="Main navigation">
+          {NAV_LINKS.map((link) => {
+            const isActive =
+              pathname === link.url || pathname.startsWith(link.url + "/");
+            return (
+              <Link
+                key={link.url}
+                href={link.url}
+                className={cn(
+                  "rounded-md px-3 py-1.5 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-fd-ring",
+                  isActive
+                    ? "bg-fd-accent text-fd-foreground font-medium"
+                    : "text-fd-muted-foreground hover:bg-fd-accent hover:text-fd-foreground",
+                )}
+                {...(isActive ? { "aria-current": "page" as const } : {})}
+              >
+                {link.text}
+              </Link>
+            );
+          })}
         </nav>
+
+        <div className="flex items-center gap-1">
+          <ThemeToggle />
+          <SearchButton />
+          <a
+            href={site.repo}
+            target="_blank"
+            rel="noreferrer noopener"
+            className={cn(headerActionClassName, "hidden sm:inline-flex")}
+            aria-label="GitHub repository"
+          >
+            <GitHubMark className="size-4" />
+            <span className="hidden md:inline">GitHub</span>
+          </a>
+
+          {/* Mobile menu button — visible below lg */}
+          <button
+            ref={menuTriggerRef}
+            type="button"
+            className={cn(headerActionClassName, "lg:hidden")}
+            onClick={() => setMobileOpen((prev) => !prev)}
+            aria-label={mobileOpen ? "Close navigation menu" : "Open navigation menu"}
+            aria-expanded={mobileOpen}
+            aria-controls={mobileOpen ? "mobile-nav" : undefined}
+          >
+            {mobileOpen ? (
+              <X className="size-4" aria-hidden />
+            ) : (
+              <Menu className="size-4" aria-hidden />
+            )}
+          </button>
+        </div>
       </div>
+
+      <MobileMenu
+        isOpen={mobileOpen}
+        onClose={closeMobile}
+        triggerRef={menuTriggerRef}
+      />
     </header>
   );
 }
+
+/* ── Footer ─────────────────────────────────────────────────────── */
 
 export function SiteFooter() {
   return (
@@ -171,11 +285,29 @@ export function SiteFooter() {
   );
 }
 
+/* ── Skip Link ──────────────────────────────────────────────────── */
+
+function SkipLink() {
+  return (
+    <a
+      href="#main-content"
+      className="sr-only focus:not-sr-only focus:fixed focus:left-4 focus:top-4 focus:z-[100] focus:rounded-md focus:bg-fd-foreground focus:px-4 focus:py-2 focus:text-sm focus:font-medium focus:text-fd-background focus:shadow-lg focus:outline-none"
+    >
+      Skip to main content
+    </a>
+  );
+}
+
+/* ── Shell ───────────────────────────────────────────────────────── */
+
 export function SiteShell({ children }: { children: ReactNode }) {
   return (
     <>
+      <SkipLink />
       <SiteHeader />
-      <main className="flex-1">{children}</main>
+      <main id="main-content" className="flex-1" tabIndex={-1}>
+        {children}
+      </main>
       <SiteFooter />
     </>
   );

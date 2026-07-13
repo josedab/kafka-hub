@@ -1,5 +1,6 @@
 import type { BaseLayoutProps } from "fumadocs-ui/layouts/shared";
 import { site } from "@/lib/site";
+import { toFumadocsLinks } from "@/lib/nav-links";
 
 export const baseOptions: BaseLayoutProps = {
   nav: {
@@ -9,10 +10,5 @@ export const baseOptions: BaseLayoutProps = {
     url: "/",
   },
   githubUrl: site.repo,
-  links: [
-    { text: "Learn", url: "/learn", active: "nested-url" },
-    { text: "Diagnose", url: "/diagnose" },
-    { text: "Simulate", url: "/simulate" },
-    { text: "Runbooks", url: "/runbooks", active: "nested-url" },
-  ],
+  links: toFumadocsLinks(),
 };

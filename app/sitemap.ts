@@ -3,10 +3,11 @@ import { rules } from "@/lib/diagnostic-rules";
 import { runbookSource, source } from "@/lib/source";
 import { cheatsheets } from "@/lib/cheatsheet-data";
 import { errors } from "@/lib/errors-data";
-import { site } from "@/lib/site";
+import { CANONICAL_ORIGIN } from "@/lib/canonical-origin";
+import { WORKBENCH_TOOLS } from "@/lib/workbench-registry";
 import { SCENARIO_LIST } from "@kafka-hub/kafka-sim";
 
-const BASE = site.url.replace(/\/$/, "");
+const BASE = CANONICAL_ORIGIN;
 
 export default function sitemap(): MetadataRoute.Sitemap {
   const now = new Date();
@@ -20,8 +21,17 @@ export default function sitemap(): MetadataRoute.Sitemap {
     { url: `${BASE}/runbooks`, lastModified: now, changeFrequency: "weekly", priority: 0.8 },
     { url: `${BASE}/errors`, lastModified: now, changeFrequency: "monthly", priority: 0.8 },
     { url: `${BASE}/kips`, lastModified: now, changeFrequency: "monthly", priority: 0.8 },
+    { url: `${BASE}/workbench`, lastModified: now, changeFrequency: "monthly", priority: 0.7 },
     { url: `${BASE}/rss.xml`, lastModified: now, changeFrequency: "weekly", priority: 0.3 },
   ];
+
+  // Workbench tool routes from authoritative registry
+  const workbenchRoutes: MetadataRoute.Sitemap = WORKBENCH_TOOLS.map((tool) => ({
+    url: `${BASE}/workbench/${tool.slug}`,
+    lastModified: now,
+    changeFrequency: "monthly" as const,
+    priority: 0.7,
+  }));
 
   const articleRoutes: MetadataRoute.Sitemap = source
     .getPages()
@@ -79,6 +89,7 @@ export default function sitemap(): MetadataRoute.Sitemap {
 
   return [
     ...staticRoutes,
+    ...workbenchRoutes,
     ...articleRoutes,
     ...cheatsheetRoutes,
     ...runbookRoutes,

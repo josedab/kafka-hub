@@ -6,6 +6,7 @@ export interface KipEntry {
   plainSummary: string;
   why: string;
   learnSlug?: string;
+  scenarioSlug?: string;
   kipUrl: string;
 }
 
@@ -76,6 +77,7 @@ export const kips: KipEntry[] = [
     plainSummary: "KIP-429 introduced cooperative incremental rebalancing for consumers. Instead of revoking every partition on each membership change, assignors can move only the partitions that actually need to change owners.",
     why: "It reduced stop-the-world pauses and made rolling deploys less disruptive for consumers and Kafka Streams.",
     learnSlug: "consumer-rebalance",
+    scenarioSlug: "rebalance-cooperative-classic",
     kipUrl: "https://cwiki.apache.org/confluence/display/KAFKA/KIP-429%3A+Kafka+Consumer+Incremental+Rebalance+Protocol",
   },
   {
@@ -220,6 +222,7 @@ export const kips: KipEntry[] = [
     plainSummary: "KIP-848 redesigns consumer group rebalancing around a broker-side group coordinator protocol. Members heartbeat their subscriptions and receive incremental target assignments, removing the classic client-side leader assignment round.",
     why: "It lowers rebalance latency, improves coordinator control, and makes large groups less sensitive to slow or overloaded members.",
     learnSlug: "consumer-rebalance",
+    scenarioSlug: "rebalance-consumer-protocol",
     kipUrl: "https://cwiki.apache.org/confluence/display/KAFKA/KIP-848%3A+The+Next+Generation+of+the+Consumer+Rebalance+Protocol",
   },
   {

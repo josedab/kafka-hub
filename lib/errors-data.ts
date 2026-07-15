@@ -22,6 +22,7 @@ export const errors: ErrorEntry[] = [
     cause: "The producer is using acks=all and the ISR shrank below min.insync.replicas before the append. This is usually caused by follower lag, broker outages, replication throttling, or disk or network stalls on replicas.",
     fix: "Restore the ISR by fixing lagging or offline replicas before lowering durability guarantees. If the topic is intentionally under-replicated, increase the replication factor, add brokers, or revisit min.insync.replicas and producer acks together.",
     learnSlug: "isr-and-acks",
+    runbookSlug: "broker-wont-restart",
   },
   {
     id: "not-enough-replicas-after-append-exception",
@@ -33,6 +34,7 @@ export const errors: ErrorEntry[] = [
     cause: "The append passed the pre-check, then the ISR changed or followers failed to replicate before the required acknowledgments arrived. The client cannot assume the write is committed even though the leader may have a local copy.",
     fix: "Retry with an idempotent producer so duplicate appends are fenced by sequence numbers. Investigate replica lag, throttles, and follower fetch latency; sustained occurrences mean the topic cannot satisfy its configured durability under current load.",
     learnSlug: "isr-and-acks",
+    runbookSlug: "broker-wont-restart",
   },
   {
     id: "offset-out-of-range-exception",
@@ -42,6 +44,7 @@ export const errors: ErrorEntry[] = [
     retriable: false,
     summary: "A consumer requested an offset before the log start offset or after the current log end offset for a partition.",
     cause: "The committed offset may have expired due to retention, the topic may have been truncated after leader changes, or an operator may have reset offsets incorrectly. It can also happen when manually seeking to an offset from another cluster or generation.",
+    runbookSlug: "consumer-lag-climbing",
     fix: "Choose an explicit recovery policy: reset to earliest, latest, or a timestamp with kafka-consumer-groups or client logic. Audit retention, offset retention, and replication history so the group does not repeatedly commit offsets outside the retained log.",
   },
   {
@@ -65,6 +68,7 @@ export const errors: ErrorEntry[] = [
     cause: "Kafka increments the producer epoch when a new instance initializes the same transactional ID. Any older instance that continues to send, commit, or abort is treated as a zombie and fenced to preserve exactly-once semantics.",
     fix: "Treat this as fatal for the producer instance: close it and let only the active owner continue. Ensure transactional.id values are stable per task shard but never shared by concurrently running instances.",
     learnSlug: "exactly-once",
+    runbookSlug: "transactional-producer-stuck",
   },
   {
     id: "invalid-producer-epoch-exception",
@@ -76,6 +80,7 @@ export const errors: ErrorEntry[] = [
     cause: "The producer is using an epoch older than the one stored by the transaction coordinator or partition state. This normally follows fencing, coordinator failover with state recovery, or a producer continuing after InitProducerId changed its epoch.",
     fix: "Do not retry the same producer blindly; close and recreate it through the normal transactional initialization path. For stream processors, verify task ownership and deployment orchestration so old instances stop before replacements write.",
     learnSlug: "exactly-once",
+    runbookSlug: "transactional-producer-stuck",
   },
   {
     id: "out-of-order-sequence-exception",
@@ -168,6 +173,7 @@ export const errors: ErrorEntry[] = [
     cause: "Controller leadership changed while the client or broker was sending a metadata-changing request. In KRaft and ZooKeeper modes alike, stale controller routing can happen during failover or controller quorum elections.",
     fix: "Retry after refreshing metadata so the request is sent to the current controller. If it is frequent, investigate controller churn, quorum health, GC pauses, and network partitions among controller nodes.",
     learnSlug: "controller-and-metadata",
+    runbookSlug: "controller-flapping",
   },
   {
     id: "not-leader-or-follower-exception",
@@ -179,6 +185,7 @@ export const errors: ErrorEntry[] = [
     cause: "Partition leadership or replica assignment changed and the client is using stale metadata. It can also arise during leader election, reassignment, broker restarts, or KRaft and ZooKeeper controller propagation delays.",
     fix: "Refresh metadata and retry; clients normally do this automatically for retriable operations. Persistent errors point to unstable leadership, offline replicas, bad advertised.listeners, or clients pinned to brokers that no longer host the partition.",
     learnSlug: "controller-and-metadata",
+    runbookSlug: "broker-wont-restart",
   },
   {
     id: "leader-not-available-exception",
@@ -190,6 +197,7 @@ export const errors: ErrorEntry[] = [
     cause: "The partition may be in leader election, all eligible replicas may be offline, or the controller has not propagated new metadata yet. Newly created topics can briefly report this before leaders are assigned.",
     fix: "Wait for metadata convergence for transient topic creation cases. For sustained incidents, restore an in-sync replica, resolve broker or controller failures, and avoid unclean leader election unless data-loss tradeoffs are explicitly accepted.",
     learnSlug: "unclean-leader-election",
+    runbookSlug: "broker-wont-restart",
   },
   {
     id: "kafka-storage-exception",
@@ -201,6 +209,7 @@ export const errors: ErrorEntry[] = [
     cause: "Kafka converts many post-startup log I/O failures into KafkaStorageException and marks the log directory offline. Clients are expected to refresh metadata because leadership may move away from the failed replica.",
     fix: "Treat this as a broker health incident: inspect disk errors, filesystem permissions, volume fullness, and log directory offline metrics. Replace or recover the failed storage, then let partition leadership and replicas rebalance before declaring the topic healthy.",
     learnSlug: "controller-and-metadata",
+    runbookSlug: "broker-wont-restart",
   },
   {
     id: "transactional-id-authorization-exception",
@@ -212,6 +221,7 @@ export const errors: ErrorEntry[] = [
     cause: "Transactions require ACLs on the transactional ID resource in addition to topic and group permissions. It appears during initTransactions, transaction commits or aborts, or transactional offset commits when the ID pattern is not granted.",
     fix: "Grant WRITE and DESCRIBE as needed on the transactional ID resource, usually with a prefixed ACL matching the application's transactional.id pattern. Keep the pattern narrow so unrelated applications cannot fence each other.",
     learnSlug: "exactly-once",
+    runbookSlug: "transactional-producer-stuck",
   },
   {
     id: "unsupported-version-exception",

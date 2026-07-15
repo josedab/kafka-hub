@@ -1,4 +1,6 @@
-import { source } from "@/lib/source";
-import { createFromSource } from "fumadocs-core/search/server";
+import { createSearchAPI } from "fumadocs-core/search/server";
+import { buildSearchIndexes } from "@/lib/search-index";
 
-export const { GET } = createFromSource(source);
+export const { GET } = createSearchAPI("simple", {
+  indexes: buildSearchIndexes,
+});

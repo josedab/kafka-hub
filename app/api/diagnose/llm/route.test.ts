@@ -68,7 +68,14 @@ test("LLM route accepts a fake model client and caches sanitized findings", asyn
   let calls = 0;
   let selectedModel = "";
   const cache = new LruCache<
-    Array<{ title: string; detail: string; severity: "danger" | "warning" | "info" }>
+    {
+      findings: Array<{
+        title: string;
+        detail: string;
+        severity: "danger" | "warning" | "info";
+      }>;
+      rationale?: string;
+    }
   >(4);
   const findings = Array.from({ length: 6 }, (_, index) => ({
     title: index === 0 ? "t".repeat(250) : `Finding ${index}`,
@@ -112,26 +119,63 @@ test("LLM route accepts a fake model client and caches sanitized findings", asyn
   const second = await post(request(body));
   const secondJson = (await second.json()) as {
     cached: boolean;
+    rationale?: string;
     findings: unknown[];
   };
   assert.equal(secondJson.cached, true);
   assert.equal(secondJson.findings.length, 5);
+  assert.equal(secondJson.rationale, "Fixture response.");
   assert.equal(calls, 1);
 });
 
-test("LLM route surfaces model failures without a success-shaped fallback", async () => {
+test("LLM route surfaces model failures with sanitized error (no raw details)", async () => {
   const post = createPostHandler({
     take: () => true,
     getApiKey: () => "test-key",
     generateText: async () => {
-      throw new Error("fixture failure");
+      throw new Error("Connection to https://api.anthropic.com failed with key sk-ant-xxx");
     },
   });
 
   const response = await post(request(JSON.stringify({ config: "acks=all" })));
   assert.equal(response.status, 502);
-  assert.equal(
-    ((await response.json()) as { error: string }).error,
-    "fixture failure",
-  );
+  const body = (await response.json()) as { error: string };
+  // Must NOT contain raw provider details (potential key leakage)
+  assert.ok(!body.error.includes("sk-ant-xxx"), "Raw error details must not leak");
+  assert.ok(!body.error.includes("api.anthropic.com"), "Provider URLs must not leak");
+  // Must be a user-safe message
+  assert.ok(body.error.length > 0);
+  assert.ok(body.error.length <= 200);
+});
+
+test("LLM route sanitizes rate limit errors", async () => {
+  const post = createPostHandler({
+    take: () => true,
+    getApiKey: () => "test-key",
+    generateText: async () => {
+      throw new Error("Rate limit exceeded for model claude-3");
+    },
+  });
+  const response = await post(request(JSON.stringify({ config: "acks=all" })));
+  assert.equal(response.status, 502);
+  const body = (await response.json()) as { error: string };
+  assert.ok(body.error.includes("rate limit"), "Should mention rate limit");
+  assert.ok(!body.error.includes("claude-3"), "Should not mention model details");
+});
+
+test("LLM route bounds rationale length in response", async () => {
+  const longRationale = "x".repeat(5000);
+  const post = createPostHandler({
+    take: () => true,
+    cache: new LruCache(4),
+    getApiKey: () => "test-key",
+    generateText: async () => ({
+      available: true,
+      text: JSON.stringify({ findings: [], rationale: longRationale }),
+    }),
+  });
+  const response = await post(request(JSON.stringify({ config: "acks=all" })));
+  const body = (await response.json()) as { rationale?: string };
+  assert.ok(body.rationale);
+  assert.ok(body.rationale!.length <= 2000, "Rationale must be bounded");
 });

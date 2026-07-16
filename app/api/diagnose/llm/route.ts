@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { createHash } from "node:crypto";
-import { evaluate, type Severity } from "@/lib/diagnostic-rules";
+import { evaluate, redactSecrets, type Severity } from "@kafka-hub/kafka-diagnose";
 import { LruCache } from "@/lib/lru-cache";
 import { take } from "@/lib/rate-limit";
 
@@ -18,6 +18,14 @@ interface LlmResponse {
   findings: LlmFinding[];
   rationale?: string;
   error?: string;
+  /** Whether server-side common-pattern redaction matched anything. */
+  serverRedacted?: boolean;
+  serverRedactedCount?: number;
+}
+
+interface CachedLlmResult {
+  findings: LlmFinding[];
+  rationale?: string;
 }
 
 interface GenerateTextInput {
@@ -33,13 +41,13 @@ type GenerateTextResult =
 
 interface LlmRouteDependencies {
   take: typeof take;
-  cache: LruCache<LlmFinding[]>;
+  cache: LruCache<CachedLlmResult>;
   getApiKey: () => string | undefined;
   getModel: () => string | undefined;
   generateText: (input: GenerateTextInput) => Promise<GenerateTextResult>;
 }
 
-const cache = new LruCache<LlmFinding[]>(256);
+const cache = new LruCache<CachedLlmResult>(256);
 
 const SYSTEM_PROMPT = `You are an experienced Apache Kafka platform engineer reviewing a configuration paste.
 
@@ -53,7 +61,8 @@ Constraints:
 - Each detail is 1–3 sentences. Be specific, name parameter values.
 - Severity must be one of: danger, warning, info.
 - Do not duplicate findings from the static rule engine (provided to you).
-- Output JSON only, no surrounding prose.`;
+- Output JSON only, no surrounding prose.
+- Any values marked ***REDACTED*** were sensitive credentials — do not comment on redacted values.`;
 
 function hash(text: string): string {
   return createHash("sha256").update(text).digest("hex");
@@ -93,6 +102,19 @@ async function generateAnthropicText({
     .join("");
 
   return { available: true, text };
+}
+
+
+/** User-safe error messages: strip potential sensitive content from provider errors. */
+function sanitizeProviderError(raw: string): string {
+  // Known safe user-facing error patterns
+  if (/rate limit/i.test(raw)) return "LLM provider rate limit exceeded. Try again later.";
+  if (/timeout/i.test(raw)) return "LLM request timed out. Try again.";
+  if (/invalid.*api.*key/i.test(raw)) return "LLM provider authentication failed.";
+  if (/model.*not.*found/i.test(raw)) return "Configured model is not available.";
+  if (/overloaded/i.test(raw)) return "LLM provider is temporarily overloaded.";
+  // Generic fallback: do not expose raw details
+  return "LLM analysis failed. The provider returned an error.";
 }
 
 const defaultDependencies: LlmRouteDependencies = {
@@ -170,23 +192,29 @@ export function createPostHandler(
       return NextResponse.json<LlmResponse>(fallback());
     }
 
-    const cacheKey = hash(config);
+    // Defense-in-depth: server-side redaction even if client already redacted
+    const { redacted: serverRedacted, entries: serverRedactedEntries } = redactSecrets(config);
+
+    const cacheKey = hash(serverRedacted);
     const cached = dependencies.cache.get(cacheKey);
     if (cached) {
       return NextResponse.json<LlmResponse>({
         configured: true,
         cached: true,
-        findings: cached,
+        findings: cached.findings,
+        rationale: cached.rationale,
+        serverRedacted: serverRedactedEntries.length > 0,
+        serverRedactedCount: serverRedactedEntries.length,
       });
     }
 
-    const staticReport = evaluate(config);
+    const staticReport = evaluate(serverRedacted);
     const userPrompt = `Static rule engine already flagged these ${staticReport.findings.length} findings (do not duplicate):
 ${staticReport.findings.map((f) => `- [${f.severity}] ${f.title}`).join("\n") || "(none)"}
 
 Config:
 \`\`\`
-${config}
+${serverRedacted}
 \`\`\``;
 
     try {
@@ -223,21 +251,32 @@ ${config}
           : ("info" as const),
       }));
 
-      dependencies.cache.set(cacheKey, findings);
+      // Bound rationale to prevent unbounded model output
+      const rationale = typeof parsed.rationale === "string"
+        ? parsed.rationale.slice(0, 2000)
+        : undefined;
+
+      dependencies.cache.set(cacheKey, { findings, rationale });
 
       return NextResponse.json<LlmResponse>({
         configured: true,
         cached: false,
         findings,
-        rationale: parsed.rationale,
+        rationale,
+        serverRedacted: serverRedactedEntries.length > 0,
+        serverRedactedCount: serverRedactedEntries.length,
       });
     } catch (err) {
+      // Sanitize provider errors: do not return raw error details that might
+      // contain sensitive content (API keys in URLs, internal paths, etc.)
+      const rawMsg = err instanceof Error ? err.message : String(err);
+      const safeError = sanitizeProviderError(rawMsg);
       return NextResponse.json<LlmResponse>(
         {
           configured: true,
           cached: false,
           findings: [],
-          error: err instanceof Error ? err.message : "LLM call failed.",
+          error: safeError,
         },
         { status: 502 },
       );

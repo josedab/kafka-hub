@@ -6,70 +6,41 @@ import {
   useMemo,
   useRef,
   useState,
-  type DragEvent,
 } from "react";
-import Link from "next/link";
 import {
-  AlertTriangle,
   CheckCircle2,
   Copy,
   Download,
-  Info,
   Loader2,
+  ShieldAlert,
   Sparkles,
-  XCircle,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { SanitizationWarning } from "@/components/sanitization-warning";
 import { cn } from "@/lib/cn";
 import {
   evaluate,
   rules,
+  prepareForUrl,
+  prepareForHistory,
+  prepareForJsonExport,
+  prepareForLlm,
   type Category,
-  type DiagnosticFinding,
-  type Severity,
-} from "@/lib/diagnostic-rules";
+  type RedactionReport,
+} from "@kafka-hub/kafka-diagnose";
 import {
   DIAGNOSE_HISTORY_KEY,
   DiagnoseHistory,
   type DiagnoseHistoryEntry,
 } from "./diagnose-history";
+import { FindingCard } from "./components/finding-card";
+import { LlmPanel, type LlmResponse } from "./components/llm-panel";
+import { CategoryFilter, ALL_CATEGORIES } from "./components/category-filter";
+import { ConfigInput } from "./components/config-input";
+import { FixComposer } from "./components/fix-composer";
 
-const severityMeta: Record<
-  Severity,
-  { label: string; icon: typeof Info; tone: "danger" | "warning" | "info" }
-> = {
-  danger: { label: "Danger", icon: XCircle, tone: "danger" },
-  warning: { label: "Warning", icon: AlertTriangle, tone: "warning" },
-  info: { label: "Info", icon: Info, tone: "info" },
-};
-
-const ALL_CATEGORIES: Category[] = [
-  "broker",
-  "topic",
-  "producer",
-  "consumer",
-  "transactions",
-  "security",
-  "performance",
-];
-
-const MAX_CONFIG_DROP_BYTES = 100 * 1024;
 const HISTORY_LIMIT = 5;
-
-interface LlmFinding {
-  title: string;
-  detail: string;
-  severity: Severity;
-}
-
-interface LlmResponse {
-  configured: boolean;
-  cached: boolean;
-  findings: LlmFinding[];
-  rationale?: string;
-  error?: string;
-}
 
 interface Props {
   sample: string;
@@ -102,7 +73,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isHistoryEntry(value: unknown): value is DiagnoseHistoryEntry {
   if (!isRecord(value)) return false;
-
   return (
     typeof value.ts === "number" &&
     typeof value.config === "string" &&
@@ -114,7 +84,6 @@ function isHistoryEntry(value: unknown): value is DiagnoseHistoryEntry {
 
 function readDiagnoseHistory(): DiagnoseHistoryEntry[] {
   if (typeof window === "undefined") return [];
-
   try {
     const raw = window.localStorage.getItem(DIAGNOSE_HISTORY_KEY);
     const parsed: unknown = raw ? JSON.parse(raw) : [];
@@ -127,15 +96,19 @@ function readDiagnoseHistory(): DiagnoseHistoryEntry[] {
 
 function writeDiagnoseHistory(entries: DiagnoseHistoryEntry[]) {
   if (typeof window === "undefined") return;
-
   try {
-    if (entries.length === 0) {
+    // Apply common-pattern redaction before localStorage egress.
+    const redactedEntries = entries.map((e) => ({
+      ...e,
+      config: prepareForHistory(e.config).payload,
+    }));
+    if (redactedEntries.length === 0) {
       window.localStorage.removeItem(DIAGNOSE_HISTORY_KEY);
     } else {
-      window.localStorage.setItem(DIAGNOSE_HISTORY_KEY, JSON.stringify(entries));
+      window.localStorage.setItem(DIAGNOSE_HISTORY_KEY, JSON.stringify(redactedEntries));
     }
   } catch {
-    // localStorage may be unavailable in private or constrained contexts.
+    // localStorage may be unavailable
   }
 }
 
@@ -157,16 +130,14 @@ export function DiagnoseClient({ sample }: Props) {
     () => new Set(ALL_CATEGORIES),
   );
   const [copied, setCopied] = useState(false);
-  const [isConfigDragging, setIsConfigDragging] = useState(false);
-  const [shortcutHint, setShortcutHint] = useState("Ctrl+↵");
+  const [shortcutHint, setShortcutHint] = useState("Ctrl+\u21B5");
   const [history, setHistory] = useState<DiagnoseHistoryEntry[]>([]);
   const [llmLoading, setLlmLoading] = useState(false);
   const [llmResponse, setLlmResponse] = useState<LlmResponse | null>(null);
+  const [selectedFixes, setSelectedFixes] = useState<Set<string>>(new Set());
+  const [egressReport, setEgressReport] = useState<RedactionReport | null>(null);
 
-  // Hydrate from URL hash on first paint.
-  // Reading window.location.hash requires the DOM and so cannot happen
-  // during render or in a state initializer (would break SSR hydration).
-  // One mount-time sync is intentional here.
+  // Hydrate from URL hash on first paint
   useEffect(() => {
     if (typeof window === "undefined") return;
     const hash = window.location.hash;
@@ -186,14 +157,14 @@ export function DiagnoseClient({ sample }: Props) {
   useEffect(() => {
     if (navigator.platform.includes("Mac")) {
       // eslint-disable-next-line react-hooks/set-state-in-effect
-      setShortcutHint("⌘↵");
+      setShortcutHint("\u2318\u21B5");
     }
   }, []);
 
   const report = useMemo(() => evaluate(input), [input]);
 
   const filteredFindings = useMemo(() => {
-    const order: Record<Severity, number> = { danger: 0, warning: 1, info: 2 };
+    const order: Record<string, number> = { danger: 0, warning: 1, info: 2 };
     return [...report.findings]
       .filter((f) => activeCategories.has(f.category))
       .sort((a, b) => order[a.severity] - order[b.severity]);
@@ -206,6 +177,12 @@ export function DiagnoseClient({ sample }: Props) {
     return counts;
   }, [report.findings]);
 
+  const totalRulesByCategory = useMemo(() => {
+    const m = new Map<Category, number>();
+    for (const r of rules) m.set(r.category, (m.get(r.category) ?? 0) + 1);
+    return m;
+  }, []);
+
   const toggleCategory = (c: Category) => {
     setActiveCategories((prev) => {
       const next = new Set(prev);
@@ -215,10 +192,18 @@ export function DiagnoseClient({ sample }: Props) {
     });
   };
 
+  const toggleFix = useCallback((ruleId: string) => {
+    setSelectedFixes((prev) => {
+      const next = new Set(prev);
+      if (next.has(ruleId)) next.delete(ruleId);
+      else next.add(ruleId);
+      return next;
+    });
+  }, []);
+
   const rememberRun = useCallback(
     (config: string) => {
       if (config.trim().length === 0) return;
-
       const entry = toHistoryEntry(config);
       const next = [
         entry,
@@ -237,8 +222,11 @@ export function DiagnoseClient({ sample }: Props) {
 
   const copyShareLink = useCallback(async () => {
     if (typeof window === "undefined") return;
-    const enc = encodeConfig(input);
+    // Redact via egress boundary before encoding into URL
+    const { payload: redacted, report: redactReport } = prepareForUrl(input);
+    const enc = encodeConfig(redacted);
     const url = `${window.location.origin}${window.location.pathname}#c=${enc}`;
+    setEgressReport(redactReport);
     try {
       await navigator.clipboard.writeText(url);
       setCopied(true);
@@ -249,14 +237,10 @@ export function DiagnoseClient({ sample }: Props) {
   }, [input]);
 
   const downloadJson = useCallback(() => {
-    const payload = {
-      generatedAt: new Date().toISOString(),
-      ruleEngineVersion: 1,
-      parsedKeys: report.parsedKeys,
-      stats: report.stats,
-      findings: report.findings,
-    };
-    const blob = new Blob([JSON.stringify(payload, null, 2)], {
+    // Apply common-pattern redaction before export/download egress.
+    const { payload, report: redactReport } = prepareForJsonExport(input);
+    setEgressReport(redactReport);
+    const blob = new Blob([payload], {
       type: "application/json",
     });
     const url = URL.createObjectURL(blob);
@@ -265,7 +249,7 @@ export function DiagnoseClient({ sample }: Props) {
     a.download = `kafka-hub-diagnosis-${Date.now()}.json`;
     a.click();
     URL.revokeObjectURL(url);
-  }, [report]);
+  }, [input]);
 
   const runLlm = useCallback(
     async (configOverride?: string) => {
@@ -276,12 +260,17 @@ export function DiagnoseClient({ sample }: Props) {
       setLlmLoading(true);
       setLlmResponse(null);
       try {
+        // Apply common-pattern redaction before LLM egress.
+        const { payload: redacted, report: redactReport } = prepareForLlm(config);
+        setEgressReport(redactReport);
         const res = await fetch("/api/diagnose/llm", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ config }),
+          body: JSON.stringify({ config: redacted }),
         });
         const json = (await res.json()) as LlmResponse;
+        json.redacted = redactReport.count > 0;
+        json.redactedCount = redactReport.count;
         setLlmResponse(json);
       } catch (err) {
         setLlmResponse({
@@ -295,30 +284,6 @@ export function DiagnoseClient({ sample }: Props) {
       }
     },
     [input, llmLoading, rememberRun],
-  );
-
-  const handleConfigDragOver = useCallback(
-    (event: DragEvent<HTMLTextAreaElement>) => {
-      event.preventDefault();
-      event.dataTransfer.dropEffect = "copy";
-      setIsConfigDragging(true);
-    },
-    [],
-  );
-
-  const handleConfigDrop = useCallback(
-    async (event: DragEvent<HTMLTextAreaElement>) => {
-      event.preventDefault();
-      event.stopPropagation();
-      setIsConfigDragging(false);
-
-      const file = event.dataTransfer.files.item(0);
-      if (!file) return;
-
-      const text = await file.slice(0, MAX_CONFIG_DROP_BYTES).text();
-      setInput(text);
-    },
-    [],
   );
 
   const handleHistorySelect = useCallback(
@@ -346,12 +311,6 @@ export function DiagnoseClient({ sample }: Props) {
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [runLlm]);
 
-  const totalRulesByCategory = useMemo(() => {
-    const m = new Map<Category, number>();
-    for (const r of rules) m.set(r.category, (m.get(r.category) ?? 0) + 1);
-    return m;
-  }, []);
-
   const hasHistory = history.length > 0;
 
   return (
@@ -364,42 +323,14 @@ export function DiagnoseClient({ sample }: Props) {
       )}
     >
       <div className="order-1 flex flex-col gap-3">
-        <div className="flex items-center justify-between">
-          <h2 className="text-sm font-semibold uppercase tracking-wider text-fd-muted-foreground">
-            Paste config
-          </h2>
-          <div className="flex flex-wrap gap-2">
-            <Button
-              variant="secondary"
-              size="sm"
-              onClick={() => setInput(sample)}
-            >
-              Load sample
-            </Button>
-            <Button variant="ghost" size="sm" onClick={() => setInput("")}>
-              Clear
-            </Button>
-          </div>
-        </div>
-        <textarea
+        <ConfigInput
           value={input}
-          onChange={(e) => setInput(e.target.value)}
-          onDragEnter={() => setIsConfigDragging(true)}
-          onDragOver={handleConfigDragOver}
-          onDragLeave={() => setIsConfigDragging(false)}
-          onDrop={handleConfigDrop}
-          spellCheck={false}
-          className={cn(
-            "min-h-[420px] w-full resize-y rounded-xl border border-fd-border bg-fd-card p-4 font-mono text-xs leading-relaxed text-fd-foreground shadow-sm transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-fd-ring",
-            isConfigDragging && "border-sky-400 bg-sky-500/5",
-          )}
-          aria-label="Kafka configuration text"
+          onChange={setInput}
+          sample={sample}
+          parsedKeys={report.parsedKeys}
+          ruleCount={rules.length}
         />
         <div className="flex flex-wrap items-center gap-2">
-          <p className="mr-auto font-mono text-[11px] text-fd-muted-foreground">
-            {report.parsedKeys} key{report.parsedKeys === 1 ? "" : "s"} parsed ·
-            findings update as you type · {rules.length} rules loaded
-          </p>
           <Button variant="secondary" size="sm" onClick={copyShareLink}>
             <Copy className="size-3.5" aria-hidden />
             {copied ? "copied" : "share link"}
@@ -432,6 +363,27 @@ export function DiagnoseClient({ sample }: Props) {
             </kbd>
           </div>
         </div>
+        <SanitizationWarning />
+
+        {/* Accessible redaction feedback for share/copy/download/export/LLM */}
+        {egressReport && egressReport.count > 0 ? (
+          <div
+            className="flex items-start gap-2 rounded-lg border border-amber-500/20 bg-amber-500/5 p-3"
+            role="status"
+            aria-live="polite"
+            aria-label={egressReport.summary}
+          >
+            <ShieldAlert className="mt-0.5 size-4 shrink-0 text-amber-600 dark:text-amber-400" aria-hidden />
+            <div className="text-xs text-amber-700 dark:text-amber-300">
+              <span className="font-semibold">{egressReport.summary}</span>
+              {egressReport.keys.length > 0 && (
+                <span className="ml-1 text-fd-muted-foreground">
+                  Keys: {egressReport.keys.join(", ")}
+                </span>
+              )}
+            </div>
+          </div>
+        ) : null}
       </div>
 
       <DiagnoseHistory
@@ -451,33 +403,18 @@ export function DiagnoseClient({ sample }: Props) {
             <Badge tone="danger">{report.stats.danger} danger</Badge>
             <Badge tone="warning">{report.stats.warning} warning</Badge>
             <Badge tone="info">{report.stats.info} info</Badge>
+            {report.fixableCount > 0 ? (
+              <Badge tone="neutral">{report.fixableCount} fixable</Badge>
+            ) : null}
           </div>
         </div>
 
-        <div className="flex flex-wrap gap-1.5">
-          {ALL_CATEGORIES.map((c) => {
-            const matched = categoryCounts.get(c) ?? 0;
-            const total = totalRulesByCategory.get(c) ?? 0;
-            const active = activeCategories.has(c);
-            return (
-              <button
-                key={c}
-                type="button"
-                onClick={() => toggleCategory(c)}
-                aria-pressed={active}
-                className={cn(
-                  "rounded-full border px-2.5 py-0.5 font-mono text-[10px] uppercase tracking-wider transition-colors",
-                  active
-                    ? "border-fd-foreground bg-fd-foreground text-fd-background"
-                    : "border-fd-border text-fd-muted-foreground hover:bg-fd-accent",
-                )}
-                title={`${total} rules in this category`}
-              >
-                {c} {matched > 0 ? `· ${matched}` : ""}
-              </button>
-            );
-          })}
-        </div>
+        <CategoryFilter
+          activeCategories={activeCategories}
+          categoryCounts={categoryCounts}
+          totalRulesByCategory={totalRulesByCategory}
+          onToggle={toggleCategory}
+        />
 
         <div className="flex flex-col gap-3">
           {filteredFindings.length === 0 ? (
@@ -494,191 +431,25 @@ export function DiagnoseClient({ sample }: Props) {
             </div>
           ) : (
             filteredFindings.map((f, idx) => (
-              <FindingCard key={`${f.ruleId}-${idx}`} finding={f} />
+              <FindingCard
+                key={`${f.ruleId}-${idx}`}
+                finding={f}
+                selectable={true}
+                selected={selectedFixes.has(f.ruleId)}
+                onToggleSelect={toggleFix}
+              />
             ))
           )}
 
           {llmResponse ? <LlmPanel response={llmResponse} /> : null}
         </div>
-      </div>
-    </div>
-  );
-}
 
-function FindingCard({ finding: f }: { finding: DiagnosticFinding }) {
-  const meta = severityMeta[f.severity];
-  const Icon = meta.icon;
-  return (
-    <article
-      className={cn(
-        "rounded-xl border bg-fd-card p-4 shadow-sm",
-        f.severity === "danger" && "border-red-500/30",
-        f.severity === "warning" && "border-amber-500/30",
-        f.severity === "info" && "border-sky-500/30",
-      )}
-    >
-      <header className="flex items-start gap-3">
-        <Icon
-          className={cn(
-            "mt-0.5 size-4 flex-none",
-            f.severity === "danger" && "text-red-500",
-            f.severity === "warning" && "text-amber-500",
-            f.severity === "info" && "text-sky-500",
-          )}
-          aria-hidden
+        <FixComposer
+          input={input}
+          findings={report.findings}
+          selectedFixes={selectedFixes}
         />
-        <div className="flex-1">
-          <div className="flex flex-wrap items-baseline justify-between gap-2">
-            <h3 className="text-sm font-semibold">{f.title}</h3>
-            <div className="flex gap-1.5">
-              <Badge tone="neutral">{f.category}</Badge>
-              <Badge tone={meta.tone}>{meta.label}</Badge>
-            </div>
-          </div>
-          <p className="mt-1 text-sm leading-relaxed text-fd-muted-foreground">
-            {f.detail}
-          </p>
-          <div className="mt-2 flex flex-wrap items-center gap-3 text-xs text-fd-muted-foreground">
-            <span className="font-mono">{f.ruleId}</span>
-            <Link
-              href={`/diagnose/rules/${f.ruleId}`}
-              className="underline-offset-4 hover:underline"
-            >
-              Details →
-            </Link>
-            {f.learnSlug ? (
-              <Link
-                href={`/learn/${f.learnSlug}`}
-                className="underline-offset-4 hover:underline"
-              >
-                Read the explainer →
-              </Link>
-            ) : null}
-            {f.simulateSlug ? (
-              <Link
-                href={`/simulate?scenario=${encodeURIComponent(f.simulateSlug)}`}
-                className="underline-offset-4 hover:underline"
-              >
-                Reproduce in simulator →
-              </Link>
-            ) : null}
-          </div>
-          {f.fix ? <FindingFix fix={f.fix} /> : null}
-        </div>
-      </header>
-    </article>
-  );
-}
-
-function prefixDiffLine(prefix: "-" | "+", value: string): string {
-  return value
-    .split("\n")
-    .map((line) => `${prefix} ${line}`)
-    .join("\n");
-}
-
-function FindingFix({ fix }: { fix: NonNullable<DiagnosticFinding["fix"]> }) {
-  const [copied, setCopied] = useState(false);
-
-  const copyFix = useCallback(async () => {
-    try {
-      await navigator.clipboard.writeText(fix.after);
-      setCopied(true);
-      window.setTimeout(() => setCopied(false), 1500);
-    } catch {
-      setCopied(false);
-    }
-  }, [fix.after]);
-
-  return (
-    <div className="mt-3 overflow-hidden rounded-lg border border-fd-border bg-fd-background">
-      <div className="flex items-center justify-between gap-2 border-b border-fd-border px-3 py-2">
-        <span className="font-mono text-[10px] uppercase tracking-wider text-fd-muted-foreground">
-          Suggested fix
-        </span>
-        <Button
-          variant="ghost"
-          size="sm"
-          className="h-7 px-2 text-[11px]"
-          onClick={copyFix}
-        >
-          <Copy className="size-3" aria-hidden />
-          {copied ? "Copied!" : "Copy fix"}
-        </Button>
-      </div>
-      <div className="font-mono text-xs leading-relaxed">
-        <pre className="overflow-x-auto whitespace-pre-wrap bg-red-500/5 px-3 py-2 text-red-700 dark:text-red-300">{prefixDiffLine("-", fix.before)}</pre>
-        <pre className="overflow-x-auto whitespace-pre-wrap border-t border-fd-border bg-emerald-500/5 px-3 py-2 text-emerald-700 dark:text-emerald-300">{prefixDiffLine("+", fix.after)}</pre>
       </div>
     </div>
-  );
-}
-
-function LlmPanel({ response }: { response: LlmResponse }) {
-  if (response.error) {
-    return (
-      <div className="rounded-xl border border-red-500/30 bg-red-500/5 p-4 text-sm text-red-700 dark:text-red-300">
-        <div className="font-semibold">LLM pass failed</div>
-        <p className="mt-1 text-xs opacity-80">{response.error}</p>
-      </div>
-    );
-  }
-
-  if (!response.configured) {
-    return (
-      <div className="rounded-xl border border-sky-500/30 bg-sky-500/5 p-4 text-sm text-sky-700 dark:text-sky-300">
-        <div className="flex items-center gap-2">
-          <Sparkles className="size-4" aria-hidden />
-          <span className="font-semibold">
-            LLM analysis is not configured on this deployment.
-          </span>
-        </div>
-        <p className="mt-1 text-xs opacity-80">
-          Set <code className="font-mono">ANTHROPIC_API_KEY</code> in the
-          environment to enable free-form recommendations on top of the static
-          rule engine.
-        </p>
-      </div>
-    );
-  }
-
-  return (
-    <article className="rounded-xl border border-violet-500/30 bg-violet-500/5 p-4">
-      <header className="flex items-center justify-between">
-        <div className="flex items-center gap-2 text-violet-700 dark:text-violet-300">
-          <Sparkles className="size-4" aria-hidden />
-          <span className="text-sm font-semibold">LLM recommendations</span>
-        </div>
-        {response.cached ? (
-          <Badge tone="info">cached</Badge>
-        ) : (
-          <Badge tone="neutral">fresh</Badge>
-        )}
-      </header>
-      <div className="mt-3 space-y-3">
-        {response.findings.map((f, i) => {
-          const meta = severityMeta[f.severity];
-          return (
-            <div
-              key={i}
-              className="rounded-lg border border-violet-500/20 bg-fd-background p-3"
-            >
-              <div className="flex items-baseline justify-between">
-                <h4 className="text-sm font-semibold">{f.title}</h4>
-                <Badge tone={meta.tone}>{meta.label}</Badge>
-              </div>
-              <p className="mt-1 text-sm leading-relaxed text-fd-muted-foreground">
-                {f.detail}
-              </p>
-            </div>
-          );
-        })}
-        {response.rationale ? (
-          <p className="text-xs italic text-fd-muted-foreground">
-            {response.rationale}
-          </p>
-        ) : null}
-      </div>
-    </article>
   );
 }

@@ -2,6 +2,9 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { DiagnoseClient } from "./diagnose-client";
 import { SiteShell } from "@/components/site-shell";
+import { rules } from "@kafka-hub/kafka-diagnose";
+
+const categoryCount = new Set(rules.map((rule) => rule.category)).size;
 
 export const metadata: Metadata = {
   title: "Diagnose",
@@ -41,7 +44,8 @@ export default function DiagnosePage() {
             Paste broker, topic or client config (Java <code>.properties</code>{" "}
             format). The static rule engine flags known footguns and links each
             finding back to the relevant Learn article. Currently{" "}
-            <span className="font-mono">36 rules</span> across 7 categories,
+            <span className="font-mono">{rules.length} rules</span> across{" "}
+            {categoryCount} categories,
             plus optional LLM-augmented analysis when{" "}
             <code className="font-mono">ANTHROPIC_API_KEY</code> is set.
           </p>

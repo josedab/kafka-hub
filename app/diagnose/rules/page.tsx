@@ -15,6 +15,7 @@ export const metadata: Metadata = {
 type BadgeTone = "danger" | "warning" | "info" | "neutral";
 
 const categoryOrder: Category[] = [
+  "validation",
   "broker",
   "topic",
   "producer",

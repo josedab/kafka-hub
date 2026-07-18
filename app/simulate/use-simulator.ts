@@ -10,6 +10,11 @@ import {
   runOp,
   SCENARIOS,
   step,
+  consumerJoin as engineConsumerJoin,
+  consumerLeave as engineConsumerLeave,
+  consumerCrash as engineConsumerCrash,
+  consumerScaleOut as engineConsumerScaleOut,
+  consumerRollingRestartStep,
   type ClusterState,
   type Scenario,
 } from "@kafka-hub/kafka-sim";
@@ -44,14 +49,17 @@ interface UseSimulatorReturn {
   reviveBroker: (brokerId: number) => void;
   /** Send a record to a partition. */
   produce: (partition: number, value: string) => void;
+  /** Consumer group operations. */
+  consumerJoin: (groupId: string, memberId: string) => void;
+  consumerLeave: (groupId: string, memberId: string) => void;
+  consumerCrash: (groupId: string, memberId: string) => void;
+  consumerScaleOut: (groupId: string, memberIds: string[]) => void;
+  consumerRollingRestart: (groupId: string, memberId: string) => void;
 }
 
 /**
  * State container for the simulator. Off-loads work to a Web Worker when the
  * browser supports it; otherwise reduces synchronously on the main thread.
- *
- * SSR is always synchronous (no Worker on the server) — the worker upgrade
- * happens after hydration when initialSlug is loaded.
  */
 export function useSimulator(initialSlug: string): UseSimulatorReturn {
   const [state, setState] = useState<ClusterState>(() => buildInitial(initialSlug));
@@ -59,9 +67,6 @@ export function useSimulator(initialSlug: string): UseSimulatorReturn {
   const workerRef = useRef<Worker | null>(null);
   const slugRef = useRef<string>(initialSlug);
 
-  // Spin up the worker after mount. We deliberately do this in an effect so
-  // SSR + initial hydration use the synchronous engine — the worker upgrade
-  // is a pure performance optimization, not a correctness requirement.
   useEffect(() => {
     if (typeof window === "undefined" || typeof Worker === "undefined") return;
 
@@ -72,7 +77,6 @@ export function useSimulator(initialSlug: string): UseSimulatorReturn {
         { type: "module" },
       );
     } catch {
-      // Some bundlers / runtimes can't load module workers. Stay synchronous.
       return;
     }
 
@@ -86,7 +90,6 @@ export function useSimulator(initialSlug: string): UseSimulatorReturn {
     });
 
     worker.addEventListener("error", () => {
-      // Worker died — drop back to synchronous mode.
       worker.terminate();
       workerRef.current = null;
       setWorkerActive(false);
@@ -103,7 +106,6 @@ export function useSimulator(initialSlug: string): UseSimulatorReturn {
     };
   }, []);
 
-  // Helper that runs an op on the worker if available, else synchronously.
   const send = useCallback(
     (msg: unknown, syncFallback: (s: ClusterState) => ClusterState) => {
       const w = workerRef.current;
@@ -161,6 +163,41 @@ export function useSimulator(initialSlug: string): UseSimulatorReturn {
     [send],
   );
 
+  const doConsumerJoin = useCallback(
+    (groupId: string, memberId: string) => {
+      send({ type: "consumerJoin", groupId, memberId }, (s) => engineConsumerJoin(s, groupId, memberId));
+    },
+    [send],
+  );
+
+  const doConsumerLeave = useCallback(
+    (groupId: string, memberId: string) => {
+      send({ type: "consumerLeave", groupId, memberId }, (s) => engineConsumerLeave(s, groupId, memberId));
+    },
+    [send],
+  );
+
+  const doConsumerCrash = useCallback(
+    (groupId: string, memberId: string) => {
+      send({ type: "consumerCrash", groupId, memberId }, (s) => engineConsumerCrash(s, groupId, memberId));
+    },
+    [send],
+  );
+
+  const doConsumerScaleOut = useCallback(
+    (groupId: string, memberIds: string[]) => {
+      send({ type: "consumerScaleOut", groupId, memberIds }, (s) => engineConsumerScaleOut(s, groupId, memberIds));
+    },
+    [send],
+  );
+
+  const doConsumerRollingRestart = useCallback(
+    (groupId: string, memberId: string) => {
+      send({ type: "consumerRollingRestart", groupId, memberId }, (s) => consumerRollingRestartStep(s, groupId, memberId));
+    },
+    [send],
+  );
+
   return {
     state,
     workerActive,
@@ -170,5 +207,10 @@ export function useSimulator(initialSlug: string): UseSimulatorReturn {
     killBroker: doKill,
     reviveBroker: doRevive,
     produce: doProduce,
+    consumerJoin: doConsumerJoin,
+    consumerLeave: doConsumerLeave,
+    consumerCrash: doConsumerCrash,
+    consumerScaleOut: doConsumerScaleOut,
+    consumerRollingRestart: doConsumerRollingRestart,
   };
 }

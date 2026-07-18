@@ -14,6 +14,11 @@
  *  → { type: "playOp", index }        run scenario op N
  *  → { type: "killBroker", brokerId } / "reviveBroker"
  *  → { type: "produce", partition, value }
+ *  → { type: "consumerJoin", groupId, memberId }
+ *  → { type: "consumerLeave", groupId, memberId }
+ *  → { type: "consumerCrash", groupId, memberId }
+ *  → { type: "consumerScaleOut", groupId, memberIds }
+ *  → { type: "consumerRollingRestart", groupId, memberId }
  *  ← { type: "state", state }
  */
 
@@ -24,6 +29,11 @@ import {
   produce,
   reviveBroker,
   step,
+  consumerJoin,
+  consumerLeave,
+  consumerCrash,
+  consumerScaleOut,
+  consumerRollingRestartStep,
   type ClusterState,
   runOp,
   SCENARIOS,
@@ -53,7 +63,12 @@ type InMessage =
   | { type: "playOp"; index: number }
   | { type: "killBroker"; brokerId: number }
   | { type: "reviveBroker"; brokerId: number }
-  | { type: "produce"; partition: number; value: string };
+  | { type: "produce"; partition: number; value: string }
+  | { type: "consumerJoin"; groupId: string; memberId: string }
+  | { type: "consumerLeave"; groupId: string; memberId: string }
+  | { type: "consumerCrash"; groupId: string; memberId: string }
+  | { type: "consumerScaleOut"; groupId: string; memberIds: string[] }
+  | { type: "consumerRollingRestart"; groupId: string; memberId: string };
 
 self.addEventListener("message", (e: MessageEvent<InMessage>) => {
   const msg = e.data;
@@ -90,6 +105,21 @@ self.addEventListener("message", (e: MessageEvent<InMessage>) => {
         state = next;
         break;
       }
+      case "consumerJoin":
+        state = consumerJoin(state, msg.groupId, msg.memberId);
+        break;
+      case "consumerLeave":
+        state = consumerLeave(state, msg.groupId, msg.memberId);
+        break;
+      case "consumerCrash":
+        state = consumerCrash(state, msg.groupId, msg.memberId);
+        break;
+      case "consumerScaleOut":
+        state = consumerScaleOut(state, msg.groupId, msg.memberIds);
+        break;
+      case "consumerRollingRestart":
+        state = consumerRollingRestartStep(state, msg.groupId, msg.memberId);
+        break;
     }
   } catch (err) {
     self.postMessage({

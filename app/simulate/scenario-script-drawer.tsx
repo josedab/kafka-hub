@@ -8,10 +8,14 @@ import {
 } from "react";
 import {
   Heart,
+  Minus,
   Plus,
+  RefreshCw,
   Send,
   Skull,
   Timer,
+  UserPlus,
+
   Zap,
   type LucideProps,
 } from "lucide-react";
@@ -54,7 +58,7 @@ function opMeta(op: PreviewOp): OpMeta {
       return {
         icon: Zap,
         label: "induce partition",
-        detail: `{${op.groupA.join(",")}} ⫽ {${op.groupB.join(",")}}`,
+        detail: `{${op.groupA.join(",")}} | {${op.groupB.join(",")}}`,
         tone: "text-amber-600 dark:text-amber-300",
       };
     case "healPartition":
@@ -90,6 +94,48 @@ function opMeta(op: PreviewOp): OpMeta {
         icon: Plus,
         label: "add group",
         detail: "consumer group",
+        tone: "text-violet-600 dark:text-violet-300",
+      };
+    case "consumerJoin":
+      return {
+        icon: UserPlus,
+        label: "join",
+        detail: `${op.memberId} -> ${op.groupId}`,
+        tone: "text-emerald-600 dark:text-emerald-300",
+      };
+    case "consumerLeave":
+      return {
+        icon: Minus,
+        label: "leave",
+        detail: `${op.memberId} <- ${op.groupId}`,
+        tone: "text-amber-600 dark:text-amber-300",
+      };
+    case "consumerCrash":
+      return {
+        icon: Skull,
+        label: "crash",
+        detail: `${op.memberId} in ${op.groupId}`,
+        tone: "text-red-600 dark:text-red-300",
+      };
+    case "consumerRestart":
+      return {
+        icon: Heart,
+        label: "restart",
+        detail: `${op.memberId} in ${op.groupId}`,
+        tone: "text-emerald-600 dark:text-emerald-300",
+      };
+    case "consumerScaleOut":
+      return {
+        icon: UserPlus,
+        label: "scale out",
+        detail: `+${op.memberIds.length} in ${op.groupId}`,
+        tone: "text-sky-600 dark:text-sky-300",
+      };
+    case "consumerRollingRestartStep":
+      return {
+        icon: RefreshCw,
+        label: "rolling restart",
+        detail: `${op.memberId} in ${op.groupId}`,
         tone: "text-violet-600 dark:text-violet-300",
       };
   }
@@ -141,7 +187,8 @@ export function ScenarioScriptDrawer({
               <button
                 type="button"
                 className={cn(
-                  "grid w-full grid-cols-[2.75rem_1.75rem_minmax(0,1fr)] items-start gap-3 rounded-lg border-l-4 px-3 py-2.5 text-left transition-colors",
+                  "grid min-h-[44px] w-full grid-cols-[2.75rem_1.75rem_minmax(0,1fr)] items-start gap-3 rounded-lg border-l-4 px-3 py-2.5 text-left transition-colors",
+                  "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-fd-foreground",
                   current
                     ? "border-l-fd-foreground bg-fd-foreground/10"
                     : "border-l-transparent hover:bg-fd-muted/60",

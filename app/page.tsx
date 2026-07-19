@@ -1,9 +1,10 @@
 import Link from "next/link";
-import { ArrowRight, Sparkles } from "lucide-react";
+import { ArrowRight } from "lucide-react";
 import { SiteShell } from "@/components/site-shell";
 import { Badge } from "@/components/ui/badge";
 import { site } from "@/lib/site";
 import { source } from "@/lib/source";
+import { surfaceCountLabel, getProjectVersion } from "@/lib/project-stats";
 
 const surfaceAccent: Record<string, string> = {
   learn: "from-emerald-500/15 to-emerald-500/0",
@@ -12,6 +13,7 @@ const surfaceAccent: Record<string, string> = {
   runbooks: "from-rose-500/15 to-rose-500/0",
   errors: "from-orange-500/15 to-orange-500/0",
   kips: "from-cyan-500/15 to-cyan-500/0",
+  workbench: "from-violet-500/15 to-violet-500/0",
 };
 
 function articleDate(page: { data: { date?: string } }) {
@@ -25,6 +27,8 @@ export default function HomePage() {
     .sort((a, b) => articleDate(b).getTime() - articleDate(a).getTime())
     .slice(0, 6);
 
+  const version = getProjectVersion();
+
   return (
     <SiteShell>
       <section className="relative overflow-hidden border-b border-fd-border">
@@ -32,7 +36,7 @@ export default function HomePage() {
         <div className="mx-auto flex w-full max-w-6xl flex-col gap-10 px-6 py-20 sm:py-28">
           <div className="flex max-w-3xl flex-col gap-6">
             <Badge tone="info" className="self-start">
-              <Sparkles className="size-3" aria-hidden /> open source · v0.1
+              open source · v{version}
             </Badge>
             <h1 className="text-balance text-4xl font-semibold leading-[1.1] tracking-tight sm:text-5xl">
               The Kafka resource you wish existed when you broke production.
@@ -64,7 +68,7 @@ export default function HomePage() {
 
       <section className="mx-auto w-full max-w-6xl px-6 py-16">
         <h2 className="text-xs font-semibold uppercase tracking-[0.2em] text-fd-muted-foreground">
-          Six surfaces
+          {surfaceCountLabel()}
         </h2>
         <div className="mt-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
           {site.surfaces.map((s) => (

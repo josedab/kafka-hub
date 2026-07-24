@@ -12,9 +12,9 @@ concurrency:
 
 jobs:
   verify:
-    name: typecheck · lint · test · build
+    name: typecheck · lint · test · coverage · build · browser
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 30
 
     steps:
       - uses: actions/checkout@v4
@@ -22,15 +22,15 @@ jobs:
       - name: Install pnpm
         uses: pnpm/action-setup@v4
         with:
-          version: 11.13.0
+          version: 11.17.0
 
-      - name: Use Node.js
+      - name: Use Node.js 22
         uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: pnpm
 
-      - name: Install
+      - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
       - name: Typecheck
@@ -39,13 +39,31 @@ jobs:
       - name: Lint
         run: pnpm lint
 
-      - name: Test
+      - name: Unit tests
         run: pnpm test
 
-      - name: Build
+      - name: Coverage thresholds
+        run: pnpm test:coverage
+
+      - name: Production build
         run: pnpm build
 
-      - name: CLI package smoke test
+      - name: Workspace package builds
+        run: pnpm --recursive --filter "./packages/*" --if-present build
+
+      - name: Install Playwright Chromium
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: Browser smoke tests
+        run: pnpm test:browser
+
+      - name: Production audit (informational — high/critical)
+        continue-on-error: true
+        run: |
+          echo "Policy: report high/critical production advisories in PR CI without making an external advisory database a merge gate."
+          pnpm audit --prod --audit-level high
+
+      - name: CLI tarball smoke test
         shell: bash
         run: |
           set -euo pipefail

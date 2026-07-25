@@ -8,7 +8,7 @@ project built in public.
 - Be kind. Disagree on technical specifics, never on the person.
 - Don't open a PR for cosmetic-only changes (whitespace, reformatting) unless
   the existing formatting is broken.
-- Performance, correctness and accessibility regressions block a merge.
+- Performance, correctness, and accessibility regressions block a merge.
 - New runtime dependencies need a one-line justification in the PR description.
 
 ## What we welcome
@@ -17,51 +17,31 @@ In priority order:
 
 1. **Bug reports.** Especially anything in the diagnostic engine that produces
    a false positive or misses an obvious footgun.
-2. **New diagnostic rules.** Each rule is a single object in
-   `packages/kafka-diagnose/src/rules.ts`. See the `Rule` interface in
-   `types.ts`. New rules should include the `category` field and, when
-   relevant, a `learnSlug` pointing at an explainer article.
-3. **Learn articles.** Drop a new MDX file under `content/learn/<slug>.mdx`,
-   register it in `meta.json`, and add the `date` field (quoted as a string —
-   YAML auto-parses unquoted dates into `Date` objects). Each article must
-   ship with at least one interactive component and link to the relevant
-   Diagnose rules and Simulate scenarios.
-4. **Simulator scenarios.** Add a new `Scenario` to
-   `packages/kafka-sim/src/scenarios.ts`. Scenarios are pure data plus a
-   linear script of ops (`wait`, `produce`, `killBroker`, etc.). Static
-   `generateStaticParams()` in `app/simulate/embed/[scenario]/page.tsx`
-   picks them up automatically.
-5. **CLI improvements.** The CLI in `packages/kafka-cli/` reuses the
+2. **New diagnostic rules.** See below.
+3. **Learn articles.** See below.
+4. **Simulator scenarios.** See below.
+5. **Workbench tool improvements.** Each tool has its own engine in
+   `packages/kafka-planners/` or `packages/incident-parser/`.
+6. **CLI improvements.** The CLI in `packages/kafka-cli/` reuses the
    diagnose engine — keep parity with the web UI.
 
 ## What we won't merge
 
-- Real Kafka client code in the browser. This is a teaching tool; the
-  simulator stays deterministic and in-process.
-- LLM features that don't have cost controls.
-- Anything that adds authentication, telemetry beyond anonymous page views,
-  or a monetization path without a prior discussion in an issue.
+- Real Kafka client code in the browser.
+- LLM features without cost controls.
+- Authentication, telemetry beyond anonymous page views, or monetization
+  without a prior discussion in an issue.
 
 ## Local development
 
-The only required tools are Node.js 22+ and the pnpm version pinned in the
-root `package.json`. You do **not** need Kafka, Docker, Redis, a database, an
-Anthropic key, or a browser test runner.
+Required: **Node.js 22+** and the pnpm version pinned in `package.json`.
+You do **not** need Kafka, Docker, Redis, a database, or an Anthropic key.
 
 ```bash
-corepack enable # only needed when pnpm is not already available
+corepack enable
 pnpm install
 pnpm dev
 ```
-
-For a non-interactive shell or automation, use:
-
-```bash
-CI=true pnpm install --frozen-lockfile
-```
-
-All default tests are hermetic. The optional Anthropic path is covered with an
-in-process fake; tests never call the live API.
 
 Before opening a PR:
 
@@ -69,197 +49,178 @@ Before opening a PR:
 pnpm typecheck
 pnpm lint
 pnpm test
+pnpm test:coverage
+pnpm test:browser      # requires Chromium: corepack pnpm exec playwright install chromium
 pnpm build
+corepack pnpm audit --prod
 ```
 
-For changes inside `packages/kafka-cli/`, also smoke-test the binary:
-
-```bash
-pnpm --filter @kafka-hub/kafka-cli build
-node packages/kafka-cli/bin/kafka-hub.mjs diagnose ./your-test.properties
-```
-
-## Commit and PR style
-
-- One topic per PR. Multiple unrelated changes get split.
-- Commit messages: imperative mood (`add foo`, not `added foo`).
-- PR description should explain *why*, not just *what*. A diff already says
-  what.
-
-## License for contributions
-
-By contributing you agree your contribution is licensed under the
-[MIT license](LICENSE). No CLA is required — PRD §11 noted CLA vs DCO as an
-open question; we landed on plain MIT with no extra paperwork.
+PR CI keeps the production audit informational because advisory data can
+change independently of a pull request. A scheduled/manual workflow installs
+the frozen lockfile and hard-fails on high or critical production advisories.
 
 ## How to add a Diagnose rule
 
-1. Pick a kebab-case, descriptive rule ID. Decide its `severity` (`danger`,
-   `warning`, or `info`) and `category` (`broker`, `topic`, `producer`,
-   `consumer`, `transactions`, `security`, or `performance`).
-2. Add the rule to `packages/kafka-diagnose/src/rules.ts` following the existing
-   `Rule` pattern. The evaluator receives parsed `.properties` keys and returns
-   a finding, an array of findings, or `null` for a clean config. Include
-   `learnSlug` when an article explains the concept, plus optional
-   `simulateSlug` and `fix` fields when the UI can reproduce or copy a repair.
+Canonical rule documentation lives in
+`packages/kafka-diagnose/src/rule-metadata.ts`. Rules are composed in
+`packages/kafka-diagnose/src/rules/index.ts`.
 
-   ```ts
-   {
-     id: "retention-ms-too-short",
-     category: "topic",
-     evaluate(config) {
-       const retentionMs = num(config["retention.ms"] ?? config["log.retention.ms"]);
-       if (retentionMs === undefined || retentionMs >= 86_400_000) return null;
+Rules are organized by category in `packages/kafka-diagnose/src/rules/`:
+- `validation.ts`, `broker.ts`, `topic.ts`, `producer.ts`, `consumer.ts`
+- `security.ts`, `transactions.ts`, `performance.ts`
 
-       return {
-         severity: "warning",
-         title: "retention.ms is shorter than one day",
-         detail:
-           "Short retention windows can evict replay data before downstream consumers recover.",
-         learnSlug: "log-compaction",
-         simulateSlug: "slow-consumer",
-         fix: {
-           before: `retention.ms=${retentionMs}`,
-           after: "retention.ms=86400000",
-         },
-       };
-     },
-   },
-   ```
+Each file exports an array of `RuleWithFix` objects. Rule IDs, categories,
+evaluation logic, finding severity/links, and optional `structuredFix` values
+live with the rule. Canonical documentation titles, examples, and
+“why it matters” copy live in `rule-metadata.ts`.
 
-3. Add a `node:test` case in `packages/kafka-diagnose/src/diagnose.test.ts`
-   with both a triggering config and a non-triggering control.
+1. Pick a kebab-case rule ID. Choose its `severity` (`danger`, `warning`,
+   `info`) and add it to the correct category file.
 
-   ```ts
-   test("evaluate: retention-ms-too-short fires only below one day", () => {
-     const trigger = evaluate("retention.ms=3600000");
-     assert.ok(
-       trigger.findings.some((finding) => finding.ruleId === "retention-ms-too-short"),
-     );
+2. The evaluator receives parsed `.properties` keys and returns a finding,
+   an array, or `null`. Include `learnSlug` when an article exists, and
+   `structuredFix` when a lossless patch is possible.
 
-     const control = evaluate("retention.ms=604800000");
-     assert.equal(
-       control.findings.some((finding) => finding.ruleId === "retention-ms-too-short"),
-       false,
-     );
-   });
-   ```
+3. Add tests in the relevant concern-focused file (for example
+   `engine.test.ts`, `patch.test.ts`, or a category-specific test). Test both
+   triggering and non-triggering configs.
 
-4. Optional: update the relevant `content/learn/<slug>.mdx` article with a short
-   cross-link to the new rule.
-5. Run the full check set:
-
+4. Run the full check set:
    ```bash
    pnpm test
    pnpm typecheck
    pnpm build
    ```
 
-   The rule auto-appears on `/diagnose` and gets a canonical page at
-   `/diagnose/rules/<id>`.
+The rule auto-appears on `/diagnose` and gets a canonical page at
+`/diagnose/rules/<id>`.
+
+### Rule categories & file locations
+
+| Category | File |
+| --- | --- |
+| validation | `packages/kafka-diagnose/src/rules/validation.ts` |
+| broker | `packages/kafka-diagnose/src/rules/broker.ts` |
+| topic | `packages/kafka-diagnose/src/rules/topic.ts` |
+| producer | `packages/kafka-diagnose/src/rules/producer.ts` |
+| consumer | `packages/kafka-diagnose/src/rules/consumer.ts` |
+| security | `packages/kafka-diagnose/src/rules/security.ts` |
+| transactions | `packages/kafka-diagnose/src/rules/transactions.ts` |
+| performance | `packages/kafka-diagnose/src/rules/performance.ts` |
+
+### Lossless properties tests
+
+The `patch.test.ts` suite verifies that structured fixes produce lossless
+round-trip patches. The `egress.test.ts` suite verifies coverage for recognized
+secret patterns (passwords, JAAS credentials, tokens, private keys, cloud
+credentials, authentication fields, secret-like keys). Redaction remains
+best-effort; tests do not prove arbitrary input is secret-free.
 
 ## How to add a Learn article
 
-1. Create `content/learn/<slug>.mdx` with frontmatter. Keep `date` quoted — YAML
-   auto-parses unquoted dates into `Date` objects.
-
-   ```mdx
-   ---
-   title: Backpressure for embedding pipelines
-   description: How to keep Kafka-backed embedding jobs bounded and replayable.
-   date: "2026-06-01"
+1. Create `content/learn/<slug>.mdx` with frontmatter:
+   ```yaml
+   title: Your Title
+   description: One-line description.
+   date: "2026-07-01"
    scenarios: ["slow-consumer"]
-   ---
    ```
-
-2. Add the slug to `content/learn/meta.json` in the desired sidebar position.
-3. Encouraged: add at least one interactive component. Put it in
-   `components/demos/<demo>.tsx` as a Client Component.
-
-   ```tsx
-   "use client";
-
-   export function EmbeddingBackpressureDemo() {
-     return <div className="rounded-xl border p-4">Interactive demo</div>;
-   }
-   ```
-
-   Import it directly in the MDX when it is article-specific:
-
-   ```mdx
-   import { EmbeddingBackpressureDemo } from "@/components/demos/embedding-backpressure-demo";
-
-   <EmbeddingBackpressureDemo />
-   ```
-
-   If you want a demo auto-available across articles, register it globally in
-   `mdx-components.tsx` when present; in this repo today, globally available
-   demos are passed from `app/learn/[[...slug]]/page.tsx`.
-4. Encouraged: reference relevant Diagnose rules and Simulate scenarios in the
-   body and footer. Add scenario slugs to frontmatter with `scenarios: [...]`.
-5. Run `pnpm build`. The article auto-appears in the sidebar, `/rss.xml`, the
-   sitemap, and the homepage "Latest articles" list.
+2. Register the slug in `content/learn/meta.json`.
+3. Encouraged: add an interactive component in `components/demos/`.
+4. Run `pnpm build`. The article auto-appears in sidebar, RSS, sitemap, and
+   the homepage.
 
 ## How to add a Simulate scenario
 
-1. Add a `Scenario` object to `packages/kafka-sim/src/scenarios.ts`. Required
-   fields are `slug`, `title`, `blurb`, `cluster` (`ClusterOptions`), and
-   `script` (`ScenarioOp[]`).
+1. Add a `Scenario` to `packages/kafka-sim/src/scenarios.ts`.
+2. Add a test in the relevant simulator file:
+   `engine.operations.test.ts`, `engine.invariants.test.ts`, or
+   `engine.reconciliation.test.ts`.
+3. Run `pnpm build`. The scenario auto-appears at `/simulate` and gets an
+   embed route.
 
-   ```ts
-   "rolling-restart": {
-     slug: "rolling-restart",
-     title: "Rolling restart — one broker at a time",
-     blurb: "Restart brokers sequentially while ISR recovers between steps.",
-     cluster: {
-       brokerCount: 3,
-       partitionCount: 3,
-       replicationFactor: 3,
-       minInsyncReplicas: 2,
-       producerAcks: "all",
-     },
-     script: [
-       { kind: "produce", partition: 0, value: "before restart" },
-       { kind: "killBroker", brokerId: 0, note: "broker 0 down" },
-       { kind: "wait", ticks: 2, note: "ISR stabilizes" },
-       { kind: "reviveBroker", brokerId: 0, note: "broker 0 back" },
-       { kind: "wait", ticks: 3, note: "broker rejoins ISR" },
-     ],
-   },
-   ```
+### Three-axis consumer group model
 
-2. Optional: add `consumerGroup` when the scenario needs a consumer group.
+The simulator models consumer groups along three independent axes:
 
-   ```ts
-   consumerGroup: {
-     id: "orders-indexer",
-     consumerIds: ["c-1", "c-2"],
-     protocol: "cooperative",
-     consumeRatePerTick: 1,
-   },
-   ```
+1. **`groupProtocol`**: `"classic" | "consumer"` — protocol selection
+2. **`classicAssignmentBehavior`**: `"eager" | "cooperative"` — classic only
+3. **`assignor`** — explicit partition assignment strategy:
+   - Classic eager: `range` (default), `roundrobin`, `sticky`,
+     with incompatible cooperative assignors normalized to `range`
+   - Classic cooperative: `cooperative-sticky` (required/default);
+     eager-only assignors are normalized to `cooperative-sticky`
+   - Consumer protocol (KIP-848): `uniform` (always, server-side)
 
-3. Put the scenario in the order you want it on the picker. `SCENARIO_LIST` is
-   currently derived from `Object.values(SCENARIOS)`, so the object insertion
-   order in `SCENARIOS` controls display order.
-4. Add a `node:test` case in `packages/kafka-sim/src/engine.test.ts` that
-   exercises the script's terminal state.
+The KIP-848 consumer protocol is NOT "cooperative" in the classic sense. It
+uses broker-coordinated incremental reconciliation with group/member epochs.
+Partition moves complete within one tick (one-tick pending reconciliation).
 
-   ```ts
-   test("scenario: rolling-restart restores ISR", () => {
-     const scenario = SCENARIOS["rolling-restart"];
-     let state = createCluster(scenario.cluster);
+Invariants: ownership uniqueness, epoch monotonicity, determinism, committed
+offset preservation, protocol-specific pause/risk assertions.
 
-     for (const op of scenario.script) {
-       state = runOp(state, op).state;
-     }
+## How to add a Workbench tool
 
-     const isr = [...state.topic.partitions[0].isr].sort((a, b) => a - b);
-     assert.deepEqual(isr, [0, 1, 2]);
-   });
-   ```
+1. Register in `lib/workbench-registry.ts` (slug, title, description).
+2. Add the engine in `packages/kafka-planners/src/<name>/` with subpath export.
+3. Add a client page at `app/workbench/<slug>/`.
+4. Include `node:test` cases and ensure coverage passes.
 
-5. Run `pnpm build`. The scenario auto-appears on `/simulate`, gets an embed
-   route at `/simulate/embed/<slug>`, and is included in the sitemap. Cross-link
-   from articles by adding the slug to article frontmatter with
-   `scenarios: [...]`.
+### Planner subpath conventions
+
+Each planner lives in its own directory under `packages/kafka-planners/src/`:
+`lag/`, `capacity/`, `listeners/`, `message-size/`, `kraft/`, `dr/`.
+Each has an `index.ts` subpath export, typed input/output, deterministic
+analysis, validation, and export functions.
+
+## How to add an incident signature
+
+Add the definition to the matching failure-domain module under
+`packages/incident-parser/src/signatures/`, then compose it in
+`packages/incident-parser/src/signatures.ts`. Each signature has the shape:
+
+```ts
+{
+  id: string;
+  title: string;
+  severity: HypothesisSeverity;
+  baseConfidence: number;
+  patterns: SignaturePattern[];
+  conflicts: ConflictPattern[];
+  missingEvidence: string[];
+  recommendedNextEvidence: string[];
+  resourceLinks: ResourceLink[];
+  observability: ObservabilityRecommendation[];
+}
+```
+
+Test composition and behavior in `detect.test.ts` and `analyze.test.ts`.
+
+## Coverage and testing
+
+- **Unit tests** use `node:test` (no Jest/Vitest). Run with `pnpm test`.
+- **Coverage** uses Node 22's `--experimental-test-coverage`. Per-domain
+  thresholds are enforced in `scripts/test-coverage.mjs`:
+  - Root / diagnose / sim / CLI: ≥85% lines, ≥70% branches, ≥85% functions
+  - Incident / planners: ≥90% lines, ≥80% branches, ≥90% functions
+- **Browser tests** use Playwright (Chromium only, 25 tests). Run with
+  `pnpm test:browser` after installing:
+  `corepack pnpm exec playwright install chromium`.
+
+### Integrity tests
+
+The `lib/referential-integrity.test.ts` suite verifies cross-references
+between rules, articles, scenarios, errors, KIPs, and workbench tools
+(registry, search, referential, and observability integrity). The
+`lib/search-index.test.ts` suite validates the search index entries.
+
+## Commit and PR style
+
+- One topic per PR. Split unrelated changes.
+- Commit messages: imperative mood (`add foo`, not `added foo`).
+- PR description should explain *why*, not just *what*.
+
+## License
+
+By contributing you agree your contribution is licensed under the
+[MIT license](LICENSE).

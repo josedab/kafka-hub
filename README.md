@@ -1,225 +1,214 @@
 # Kafka Engineering Hub
 
-> Interactive learning, configuration diagnostics, and an in-browser simulator
-> for engineers working with Apache Kafka.
+> Interactive learning, configuration diagnostics, an in-browser simulator,
+> and operational workbench tools for engineers working with Apache Kafka.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 Open source. MIT licensed. Built with Next.js, Fumadocs, and Tailwind.
-Deployed on Vercel.
+Local-first — no live cluster connections, no accounts, no external services
+required.
 
-## What's in the box
+## Product surfaces
 
-Three surfaces under one roof, plus a Node CLI and an extractable simulator
-package:
+| Surface | What it does | Count |
+| --- | --- | --- |
+| **Learn** (`/learn`) | Long-form MDX articles with embedded interactive React components. | 11 articles, RSS |
+| **Diagnose** (`/diagnose`) | Paste broker, topic, or client config. Static rule engine flags footguns; optional LLM augmentation. Fix Composer merges patches; exports JSON and corrected `.properties`. | 37 rules (8 categories) |
+| **Simulate** (`/simulate`) | Deterministic in-browser Kafka: brokers, partitions, ISR, consumer groups with eager/cooperative/KIP-848 rebalance across three independent axes (protocol, behavior, assignor). | 7 scenarios, embed |
+| **Runbooks** (`/runbooks`) | Incident playbooks for common operational emergencies. | 4 runbooks |
+| **Errors** (`/errors`) | Searchable catalog of Kafka exception classes with root causes and fixes. | 20 exceptions |
+| **KIPs** (`/kips`) | Index of the most-relevant Kafka Improvement Proposals. | 25 KIPs |
+| **Workbench** (`/workbench`) | Interactive triage and analysis tools. Paste evidence or model parameters; get structured results. Exports Markdown and JSON. | 7 tools |
 
-| Surface         | What it does                                                                                                                                                       | Status                |
-| --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------------- |
-| `/learn`        | Long-form MDX articles with embedded interactive React components. The interactive piece is the wedge — static tutorials already exist.                            | **8 articles**, RSS   |
-| `/diagnose`     | Paste broker, topic or client config. A static rule engine flags known footguns and links each finding back to a Learn article. Optional LLM augmentation.         | **36 rules**          |
-| `/simulate`     | Deterministic in-browser Kafka teaching simulator: brokers, partitions, ISR, consumer groups, network partitions. Scenarios + embeddable iframe widget.            | **4 scenarios**, embed|
-| `@kafka-hub/kafka-cli` | Node CLI that lints `.properties` files with the same rules as `/diagnose`. CI-friendly exit codes + JSON output.                                            | **workspace-ready**   |
-| `@kafka-hub/kafka-sim` | Framework-free TypeScript engine powering `/simulate`. Pure functions, runs in browser, Node, or a Web Worker.                                                | **workspace-ready**   |
-| `@kafka-hub/kafka-diagnose` | The rule engine, extracted as a workspace package so the CLI and the web app share one source of truth.                                                 | **workspace-ready**   |
+### Workbench tools
 
-The full vision lives in the PRD. This README documents what is actually
-built.
+| Tool | Path | Engine |
+| --- | --- | --- |
+| Incident Triage | `/workbench/incident` | `@kafka-hub/incident-parser` — 10 failure signatures |
+| Consumer Lag Triage | `/workbench/lag` | `@kafka-hub/kafka-planners/lag` |
+| Capacity & N-1 Headroom | `/workbench/capacity` | `@kafka-hub/kafka-planners/capacity` |
+| Listener Topology Wizard | `/workbench/listeners` | `@kafka-hub/kafka-planners/listeners` |
+| Message Size Chain Checker | `/workbench/message-size` | `@kafka-hub/kafka-planners/message-size` |
+| KRaft Transition Planner | `/workbench/kraft` | `@kafka-hub/kafka-planners/kraft` |
+| DR Tabletop Planner | `/workbench/dr` | `@kafka-hub/kafka-planners/dr` |
 
 ## Local quickstart
 
-Local development needs **Node.js 22+ and pnpm only**. It does not need a
-Kafka broker, Docker, Redis, a database, an Anthropic key, or a browser test
-runner.
+Requires **Node.js 22+** and **pnpm** only. No Kafka broker, Docker, Redis,
+database, Anthropic key, or external service.
 
 ```bash
-corepack enable # only needed when pnpm is not already available
+corepack enable
 pnpm install
-pnpm dev
-# → http://localhost:3000
+pnpm dev        # → http://localhost:3000
 ```
-
-The repository pins pnpm through `packageManager`. Other package managers are
-not supported because the workspace uses pnpm's `workspace:` protocol and
-lockfile. After package installation, the default dev, test, lint, and build
-paths do not depend on deployed services.
 
 ## Scripts
 
-```bash
-pnpm dev         # local dev server (next dev + fumadocs codegen)
-pnpm build       # production build
-pnpm start       # serve the production build
-pnpm typecheck   # tsc --noEmit
-pnpm lint        # eslint with a persistent local cache
-pnpm test        # hermetic node:test suites for app utilities, API, and packages
-pnpm test:unit   # root utility + optional LLM route contract tests
-```
+| Script | Purpose |
+| --- | --- |
+| `pnpm dev` | Local dev server (Next.js + Fumadocs codegen) |
+| `pnpm build` | Production build |
+| `pnpm start` | Serve the production build |
+| `pnpm typecheck` | `tsc --noEmit` |
+| `pnpm lint` | ESLint with persistent cache |
+| `pnpm test` | Full unit test suite (root + all workspace packages) |
+| `pnpm test:coverage` | Per-domain coverage thresholds via Node 22 `--experimental-test-coverage` |
+| `pnpm test:browser` | Playwright browser smoke tests (Chromium, 25 tests). Uses production build + start locally via Playwright config. Install with `corepack pnpm exec playwright install chromium`. |
 
-CI runs all of the above plus a built-CLI smoke test, with no service
-containers or external credentials, on every push and PR via
+CI runs all of the above plus a CLI tarball smoke test on every push/PR via
 [`.github/workflows/ci.yml`](.github/workflows/ci.yml).
 
-The `postinstall`, `predev`, and `prebuild` hooks run the Fumadocs MDX
-codegen (writes to `.source/`). If TypeScript can't find `@/.source`,
-run `pnpm exec fumadocs-mdx` once and restart your TS server.
+### Dependency audit policy
 
-## Optional integrations
+PR/main CI reports **high and critical production advisories** visibly but
+does not block on the changing external advisory database. The separate
+[scheduled/manual security audit](.github/workflows/security-audit.yml)
+installs the frozen lockfile and hard-fails on high or critical production
+advisories. Run `corepack pnpm audit --prod` locally for the full production
+report.
 
-The default application is fully functional with no `.env.local` file.
+## Workspace packages
 
-| Variable | Enables | Required locally |
+| Package | Purpose | Docs |
 | --- | --- | --- |
-| `ANTHROPIC_API_KEY` | LLM suggestions after the deterministic Diagnose pass | No |
+| [`@kafka-hub/kafka-sim`](packages/kafka-sim/README.md) | Deterministic simulator engine. Pure TS, no React. | README |
+| [`@kafka-hub/kafka-diagnose`](packages/kafka-diagnose/README.md) | Static `.properties` rule engine. 37 rules, 8 categories. | README |
+| [`@kafka-hub/kafka-cli`](packages/kafka-cli/README.md) | `kafka-hub diagnose <file>` Node CLI companion. | README |
+| [`@kafka-hub/incident-parser`](packages/incident-parser/README.md) | Offline incident evidence parser and triage engine. | README |
+| [`@kafka-hub/kafka-planners`](packages/kafka-planners/README.md) | Six focused planning/triage engines (lag, capacity, listeners, message-size, kraft, dr). | README |
+
+## Architecture / repo layout
+
+```
+app/                       # Next.js App Router
+  layout.tsx               # root layout (RootProvider, search, optional analytics)
+  page.tsx                 # marketing homepage
+  learn/                   # Fumadocs MDX article surface
+  diagnose/                # paste-only config diagnostics + Fix Composer
+  simulate/                # deterministic broker simulator
+    embed/[scenario]/      # chromeless iframe-embeddable scenario pages
+  workbench/               # 7 interactive triage tools
+  errors/                  # searchable Kafka exception catalog
+  kips/                    # KIP index
+  runbooks/                # incident playbooks (Fumadocs MDX)
+  api/
+    search/route.ts        # Fumadocs search endpoint
+    diagnose/llm/route.ts  # optional LLM augmentation (Anthropic, env-gated)
+  rss.xml/route.ts         # RSS feed for /learn articles
+content/
+  learn/                   # 11 MDX articles + meta.json
+  runbooks/                # 4 MDX runbooks + meta.json
+components/
+  site-shell.tsx           # global nav, mobile menu, footer, skip link
+  ui/                      # button, card, badge (minimal shadcn-style set)
+  demos/                   # interactive demo components used by MDX
+  workbench/               # shared Workbench UI primitives
+lib/
+  site.ts                  # site metadata
+  source.ts                # Fumadocs source loader
+  workbench-registry.ts    # authoritative Workbench tool registry
+  errors-data.ts           # 20 Kafka exception entries
+  kips-data.ts             # 25 KIP entries
+  nav-links.ts             # navigation link definitions
+  rate-limit.ts            # in-process token bucket (LLM endpoint)
+  lru-cache.ts             # SHA-256-keyed LRU for LLM responses
+  canonical-origin.ts      # NEXT_PUBLIC_SITE_URL validation
+workers/
+  simulator-worker.ts      # Web Worker harness for simulator
+packages/
+  kafka-sim/               # extracted simulator engine
+  kafka-diagnose/          # extracted rule engine
+  kafka-cli/               # Node CLI companion
+  incident-parser/         # incident evidence parser
+  kafka-planners/          # 6 planning/triage engines
+scripts/
+  test-coverage.mjs        # per-domain coverage thresholds
+tests/
+  browser/                 # Playwright browser smoke tests
+```
+
+## Privacy and trust boundaries
+
+- **No live cluster connections.** Diagnose is paste-only. Simulate is
+  in-browser. The CLI reads files/stdin. No network calls to Kafka.
+- **No accounts, no tracking cookies.** Sharing uses base64-url-encoded URL
+  hashes — the server never sees shared configs.
+- **No telemetry beyond anonymous page views.** Optional Plausible analytics
+  (no cookies, no PII). Off by default.
+- **All content is version-controlled.** No CMS, no database.
+- **Redaction:** The Diagnose export pipeline (JSON, corrected `.properties`,
+  clipboard, URL) applies best-effort, defense-in-depth redaction for common
+  secret patterns (passwords, JAAS credentials, tokens, private keys, cloud
+  credentials, authentication fields, secret-like keys). Keystore/truststore
+  locations are not treated as secrets. Workbench export uses the same
+  `@kafka-hub/kafka-diagnose` redaction. Users must review sanitized output
+  before sharing because unconventional key names, encodings, or formats may
+  not be recognized.
+
+### Optional LLM egress
+
+The `POST /api/diagnose/llm` endpoint sends best-effort sanitized config text to
+Anthropic's API for suggestions beyond static rules. This is **fully
+optional**:
+
+- Returns a graceful fallback when `ANTHROPIC_API_KEY` is unset.
+- The client applies `prepareForLlm()` before sending and the server applies
+  the same common-pattern redaction again. The resulting config text is sent,
+  not a parsed key/value object. This reduces accidental disclosure but cannot
+  guarantee detection of unconventional secrets; review input before using
+  the LLM action.
+- No other endpoint makes external network calls.
+- In-process rate limiting (10 req/min/IP) and SHA-256 LRU caching.
+
+## Environment variables
+
+See [`.env.example`](.env.example). No variables are required.
+
+| Variable | Enables | Required |
+| --- | --- | --- |
+| `NEXT_PUBLIC_SITE_URL` | Canonical origin for metadata/sitemap/RSS. Defaults to `https://kafka-hub.dev`. | No |
+| `ANTHROPIC_API_KEY` | LLM suggestions in Diagnose | No |
 | `ANTHROPIC_MODEL` | Anthropic model override | No |
 | `NEXT_PUBLIC_PLAUSIBLE_DOMAIN` | Anonymous Plausible page views | No |
-
-Anonymous page-view telemetry is off by default. To enable Plausible, set
-`NEXT_PUBLIC_PLAUSIBLE_DOMAIN=your-domain.example` before building or
-deploying. This only loads `https://plausible.io/js/script.js` with that
-domain; Plausible does not use cookies, and the app does not send names,
-emails, pasted configs, or other PII.
 
 ## Stack
 
 - **Next.js 16** (App Router) · **React 19** · **TypeScript**
 - **Tailwind CSS v4** with the Fumadocs `neutral` preset
-- **Fumadocs** (`fumadocs-ui` + `fumadocs-core` + `fumadocs-mdx`) for the MDX
-  content layer and docs IA
-- **lucide-react** for icons (with an inline GitHub mark since the brand
-  icon set was removed upstream)
-- **pnpm**
-
-## Repo layout
-
-```
-app/                       # Next.js App Router
-  layout.tsx               # root layout (RootProvider, optional analytics)
-  page.tsx                 # marketing homepage
-  learn/
-    layout.tsx             # Fumadocs DocsLayout
-    [[...slug]]/page.tsx   # MDX renderer
-  diagnose/                # paste-only config diagnostics
-  simulate/                # deterministic broker simulator
-    embed/[scenario]/      # chromeless iframe-embeddable scenario pages
-  api/
-    search/route.ts        # Fumadocs search endpoint
-    diagnose/llm/route.ts  # optional LLM augmentation (Anthropic, env-gated)
-  rss.xml/route.ts         # RSS feed for /learn articles
-content/learn/             # 8 MDX articles + meta.json
-components/
-  site-shell.tsx           # global nav + footer
-  ui/                      # button, card, badge (minimal shadcn-style set)
-  demos/                   # 8 interactive demo components used by MDX
-lib/
-  site.ts                  # site metadata
-  source.ts                # Fumadocs source loader
-  rate-limit.ts            # in-process token bucket (LLM endpoint)
-  lru-cache.ts             # SHA-256-keyed LRU for LLM responses
-  diagnostic-rules/        # re-export of @kafka-hub/kafka-diagnose
-  simulator-core/          # re-export of @kafka-hub/kafka-sim
-workers/
-  simulator-worker.ts      # extractable Web Worker harness (shipped, optional)
-packages/
-  kafka-sim/               # extracted simulator engine (publish-ready)
-  kafka-diagnose/          # extracted rule engine (publish-ready)
-  kafka-cli/               # Node CLI companion (`kafka-hub diagnose`)
-source.config.ts           # Fumadocs MDX config
-next.config.ts             # wraps NextConfig with Fumadocs createMDX
-pnpm-workspace.yaml        # workspace root
-```
-
-## Workspace packages
-
-This is a pnpm monorepo. The three internal packages are workspace-ready but
-are not published to npm yet. The CLI tarball is exercised as an installed
-package in CI; registry publication remains a manual step:
-
-| Package | Purpose | Docs |
-| ------- | ------- | ---- |
-| [`@kafka-hub/kafka-sim`](packages/kafka-sim/README.md) | Deterministic simulator engine. Pure TS, no React. | README |
-| [`@kafka-hub/kafka-diagnose`](packages/kafka-diagnose/README.md) | Static `.properties` rule engine. 36+ rules. | README |
-| [`@kafka-hub/kafka-cli`](packages/kafka-cli/README.md) | `kafka-hub diagnose <file>` Node CLI. | README |
-
-Run any of them via `pnpm --filter @kafka-hub/<name> <script>`.
+- **Fumadocs** (`fumadocs-ui` + `fumadocs-core` + `fumadocs-mdx`) for MDX
+- **Playwright** for browser smoke tests
+- **Node 22** `node:test` for unit tests and coverage
+- **pnpm 11.17** workspace monorepo
 
 ## CLI quickstart
 
 ```bash
-# from the repo root (workspace dev)
+# workspace dev
 pnpm --filter @kafka-hub/kafka-cli diagnose ./server.properties
 
-# direct shell invocation
+# direct invocation
 node packages/kafka-cli/bin/kafka-hub.mjs diagnose ./server.properties --min warning
-cat broker.properties | node packages/kafka-cli/bin/kafka-hub.mjs diagnose - --json | jq '.findings[]'
+
+# pipe from stdin + JSON output
+cat broker.properties | node packages/kafka-cli/bin/kafka-hub.mjs diagnose - --json
 ```
 
-Exits **1** when there is at least one `danger`-severity finding, **0**
-otherwise — drop it in CI to fail PRs that regress your Kafka config.
+Exits **1** on `danger`-severity findings, **0** otherwise.
 
-## Authoring an article
+## Hard constraints
 
-1. Drop a new file at `content/learn/<slug>.mdx`.
-2. Frontmatter must include `title` and `description`.
-3. Register the slug in `content/learn/meta.json` to control sidebar order.
-4. Import any custom React components and register them in
-   `app/learn/[[...slug]]/page.tsx` so MDX can use them.
+- No live cluster connections. This is by design.
+- No accounts. Sharing via URL hashes.
+- No telemetry beyond optional anonymous page views.
+- All content version-controlled. No CMS.
 
-Demo components belong in `components/demos/` and should be `"use client"`
-and self-contained — no external state, no network.
+## Kafka baseline
 
-## Adding a diagnostic rule
-
-Rules live in `packages/kafka-diagnose/src/rules.ts` and follow the `Rule`
-interface in `types.ts`. A rule receives the parsed key/value map and returns
-one or more `DiagnosticFinding` objects, or `null` for "no issue". Pick a
-`category` (broker / topic / producer / consumer / transactions / security /
-performance) so the UI can group it. If your rule relates to a Learn article,
-set `learnSlug` so both the web UI and the CLI deep-link the explainer.
-
-After editing, run `pnpm typecheck && pnpm lint && pnpm build` to verify.
-
-## LLM-augmented diagnostics
-
-The `POST /api/diagnose/llm` endpoint sends the parsed config to Anthropic's
-API for free-form recommendations beyond what static rules catch. The
-endpoint is fully optional — it returns a graceful fallback when
-`ANTHROPIC_API_KEY` is unset, so local dev and CI never depend on a real key.
-Its contract tests inject an in-process fake model function and never make a
-network request.
-
-In-process token-bucket rate-limiting (10 req/min/IP) and SHA-256-keyed LRU
-caching are wired in `lib/rate-limit.ts` + `lib/lru-cache.ts`. These controls
-are per process, which keeps local development dependency-free. A
-multi-instance production deployment should add a shared quota backend or a
-provider-side spend limit; it is not required for local work or the test
-suite.
-
-## Hard constraints (v1)
-
-- **No live cluster connections.** Diagnose is paste-only. Simulate runs
-  entirely in the browser. The CLI reads from files / stdin only. This is by
-  design.
-- **No accounts.** Sharing happens via base64-url-encoded URL hashes — the
-  server never sees a shared config. PRD §11 documents auth as deferred.
-- **No telemetry beyond anonymous page views.** Ephemeral state lives in URL
-  params or localStorage.
-- **All content version-controlled.** No CMS.
-
-## Roadmap
-
-Phased per the PRD — all four phases shipped in v0.1:
-
-- **Phase 0** — scaffold, one article with embedded demo, deploy. ✅
-- **Phase 1** — design system, **8 articles**, RSS, homepage funnel. ✅
-- **Phase 2** — Diagnose with **36 rules**, LLM augmentation,
-  shareable URLs, in-process rate limiting + caching. ✅
-- **Phase 3** — full Simulate: deterministic engine with consumer groups,
-  network partitions, 4 packaged scenarios, **embeddable widgets** linked
-  from articles via `<iframe>`. ✅
-- **Phase 4** — Node CLI companion and extractable workspace packages
-  (`@kafka-hub/kafka-sim`, `@kafka-hub/kafka-diagnose`,
-  `@kafka-hub/kafka-cli`), URL-based shareable sessions. npm publication is
-  pending. ✅
+The KRaft Transition Planner's version-awareness is reviewed against **Apache
+Kafka 4.3.1** (released 2026-06-25, reviewed 2026-07-25). This is
+time-bounded — future Kafka releases may introduce changes not yet modeled.
 
 ## License
 

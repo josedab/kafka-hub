@@ -1,0 +1,116 @@
+---
+title: "TLS, SASL, or ACL failures"
+description: "Classify transport TLS, authentication SASL, and authorization ACL evidence before rotating credentials or weakening security."
+date: "2026-07-26"
+tags: ["security", "tls", "sasl", "acls", "oauth"]
+---
+
+## Symptom
+
+Clients fail to connect, authenticate, or produce/consume after a certificate
+rotation, listener change, OAuth deployment, principal mapping update, or ACL
+change. The same user-facing “Kafka connection failed” can arise at three
+different layers:
+
+| Layer | Question | Typical evidence |
+| --- | --- | --- |
+| TLS transport | Can the client validate and connect to the broker identity? | handshake, hostname, trust chain, clock |
+| SASL authentication | Can the client prove the expected identity? | mechanism/login/token/JAAS errors |
+| ACL authorization | May the authenticated principal perform this operation? | `TopicAuthorizationException`, ACL denial, principal logs |
+
+Do not solve an ACL denial by disabling TLS, adding `ALLOW *`, printing tokens,
+or putting passwords/JAAS strings into shell history and incident tickets.
+
+## Quick checks (in order)
+
+1. Capture the exact client exception, broker-side timestamp, listener name,
+   target hostname, and authenticated principal (if present). Redact tokens,
+   passwords, cookies, and full authorization headers from evidence.
+2. Confirm the client reaches the intended listener and advertised address.
+   Good: DNS/SAN/port all identify the same broker endpoint. Bad: clients use
+   an old listener, a load balancer hostname absent from the certificate, or
+   stale DNS.
+3. For TLS, verify the public certificate's dates and identity without reading
+   a private key:
+   ```bash
+   openssl x509 -in broker-public.crt -noout -subject -issuer -dates -ext subjectAltName
+   ```
+   Check hostnames, certificate chain/truststore, client/broker clock skew, and
+   mTLS client certificate requirements.
+4. For SASL, classify the mechanism and failure: SCRAM/PLAIN credential
+   mismatch, Kerberos clock/service principal issue, or OAuth issuer/audience,
+   JWKS, token expiry, and clock-skew issue. Inspect configuration names and
+   secret-manager rotation status—not secret values.
+5. For ACLs, identify the broker-mapped principal and the exact resource,
+   operation, host, and group/transactional ID required. Good: a matching
+   allow rule is visible after propagation. Bad: the client authenticates but
+   receives an authorization exception.
+6. Compare timing with certificate/token/ACL changes and verify propagation on
+   each relevant broker/controller. Good: one consistent configuration version.
+   Bad: mixed truststores, partial rollout, or a mapping rule that differs by
+   listener/broker.
+
+## Likely causes
+
+- **Expired/untrusted certificate** — tell: TLS validation fails around the
+  certificate's validity boundary or issuer-chain change.
+- **Hostname/SAN mismatch** — tell: connection succeeds by IP or another name
+  but validation fails for the advertised listener hostname.
+- **Clock skew** — tell: TLS/OAuth/Kerberos failure coincides with host time
+  drift or a token not-yet-valid/expired message.
+- **SASL mechanism or credential mismatch** — tell: TLS completes but broker
+  logs reject the selected mechanism/login.
+- **OAuth issuer/audience/JWKS/token rotation issue** — tell: token validation
+  errors begin after identity-provider or key rotation without exposing tokens.
+- **Principal mapping mismatch** — tell: the authenticated certificate/Kerberos
+  identity maps to a different Kafka principal than the ACL expects.
+- **ACL propagation/resource gap** — tell: authentication succeeds but an exact
+  topic, group, cluster, or transactional-ID operation is denied.
+
+## Fixes
+
+### TLS certificate, chain, hostname, or clock
+
+Deploy a certificate whose SAN includes the advertised listener names; update
+truststores/chains consistently; and correct host time using the platform's
+approved time source. Roll one broker/listener path at a time and test a
+non-privileged client before broad rollout. Keep old trust material only for
+the documented overlap period.
+
+### SASL authentication
+
+Align client and broker mechanism configuration, rotate credentials through the
+secret manager, and restart/reload only the components whose configuration
+requires it. For OAuth, verify issuer, audience, scopes/claims, JWKS reachability,
+expiry, and clock without copying bearer tokens into logs or commands.
+
+Kafka 4.3 release notes include OAuth private-key JWT client assertion support
+(`KAFKA-18608`); treat it as a versioned capability with an identity-provider
+test plan, not an excuse to bypass ordinary token validation.
+
+### Principal mapping or ACL authorization
+
+First write down the principal Kafka actually sees. Then add the smallest
+resource/operation/group/transactional-ID permission required by the workload,
+using the approved IaC/AdminClient workflow. Verify the permission with a
+least-privileged test client and wait for propagation before widening access.
+
+Do not add broad wildcard ACLs as a diagnostic shortcut. They obscure the
+actual mapping/resource mismatch and can create a lasting authorization hole.
+
+## Safe rollback / stop
+
+- Stop a certificate/ACL rollout if listeners disagree on trust or principal
+  mapping; restore the prior tested configuration before retrying.
+- Retain a short, approved certificate-chain overlap, not a permanent
+  permissive trust policy.
+- Never paste secrets into shell arguments, process environments visible to
+  other users, logs, tickets, or screenshots.
+- Do not downgrade to PLAINTEXT or disable ACLs to recover one client path.
+
+## Related
+
+- Kafka primary source: [4.3.0 release notes](https://archive.apache.org/dist/kafka/4.3.0/RELEASE_NOTES.html)
+- Workbench: [Listener Topology Wizard](/workbench/listeners)
+- Diagnose: [security rules](/diagnose)
+- Learn: [Kafka, MCP, and A2A](/learn/kafka-mcp-a2a) — authorization boundaries for AI tool/agent integrations

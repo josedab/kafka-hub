@@ -1,0 +1,119 @@
+---
+title: "MirrorMaker lag or divergence"
+description: "Separate replication, checkpoint, and offset-sync evidence before a DR decision; validate missing topics, partitions, network paths, and metrics migration."
+date: "2026-07-26"
+tags: ["mirrormaker", "dr", "replication", "checkpoints", "rpo"]
+---
+
+## Symptom
+
+MirrorMaker 2 replication lag grows, target topics or partitions are missing,
+consumer failover starts at surprising offsets, checkpoints stop moving, or
+source/target records appear divergent. Do not call every discrepancy
+“replication lag.” MirrorMaker has several independently useful signals:
+
+- **replication lag:** source records not yet present at target;
+- **checkpoint lag:** consumer-group offset translation/checkpoint state trails;
+- **offset-sync behavior:** source-to-target offset mapping needed for failover;
+- **topic/partition topology:** a topic, regex, replication policy, or partition
+  count does not match the intended DR scope.
+
+Your DR recovery point objective must name which of those facts it means.
+
+## Quick checks (in order)
+
+1. Define the source cluster, target cluster, topic, partition, consumer group,
+   and time window. Capture source and target end offsets plus record
+   timestamps/keys for a bounded sample. Good: an explainable bounded gap.
+   Bad: unknown source scope or a gap growing without a rate estimate.
+2. Check MirrorSourceConnector/task health, task assignment, errors, retries,
+   and the source/target Kafka client connectivity. Good: tasks are stable and
+   advancing. Bad: task restarts, authorization/TLS failures, producer errors,
+   or network timeouts.
+3. Confirm expected topics and partitions exist on target and match the intended
+   replication policy. Good: topic include/exclude patterns and partition counts
+   are explicit. Bad: auto-created/missing topics, renamed topics not expected
+   by consumers, or source partition expansion not reflected in target scope.
+4. Inspect checkpoint and offset-sync status for the groups that will fail
+   over. Good: mappings/checkpoints advance with the documented cadence. Bad:
+   target consumption starts from an unplanned point or no current mapping
+   exists for the source group.
+5. Check source broker health, target broker disk/ISR, connector worker
+   capacity, and network throughput both directions. Good: each leg has
+   headroom. Bad: source fetch, connector transform, target produce, or target
+   storage is saturated.
+6. Compare observed metrics against the installed MirrorMaker/Connect version.
+   Kafka 4.3 release notes include `KAFKA-19149` (“Use KIP-877 in
+   MirrorMaker”). Treat dashboards as a migration project: metric names,
+   labels, and semantics can change. Do not compare a post-upgrade series to a
+   pre-upgrade alert threshold without a documented mapping.
+
+## Likely causes
+
+- **Source or target capacity problem** — tell: source fetch, target produce,
+  disk, ISR, or connector worker saturation tracks the lag slope.
+- **Network/TLS/SASL/ACL failure** — tell: connector task logs show transport,
+  authentication, or authorization errors.
+- **Missing topic/partition or bad regex/replication policy** — tell: expected
+  source objects have no target counterpart or a partition expansion is absent.
+- **Checkpoint/offset-sync misconfiguration** — tell: data appears at target
+  but failover offsets cannot be translated as expected.
+- **Transformation/record error loop** — tell: one task retries/skips a class
+  of records while other partitions progress.
+- **Metric migration confusion** — tell: alerting changed at an upgrade even
+  though bounded source/target offset evidence does not support the claimed lag.
+
+## Fixes
+
+### Replication lag with healthy topology
+
+Find the narrowest constrained leg—source fetch, connector CPU/network,
+transforms, target produce, or target disk—and add capacity or reduce the
+approved load there. Scale connector tasks only when source partition count and
+worker capacity can use them. Recheck source/target offset slope after every
+change.
+
+### Missing topics or partitions
+
+Correct the explicit include/exclude and replication policy, create required
+target topics with the intended replication/configuration, and verify source
+partition expansion handling. Avoid relying on accidental auto-creation for a
+DR contract.
+
+### Checkpoint or offset-sync issue
+
+Restore the connector configuration/permissions for checkpoints and offset
+sync, then exercise a non-production group failover using a known source
+offset. Record expected duplicate/loss exposure; offset translation is part of
+the DR runbook, not an assumption made during an outage.
+
+### Network or security path failure
+
+Use the exact connector client identity and listener path to isolate TLS, SASL,
+ACL, DNS, or routing errors. Follow [TLS, SASL, or ACL failures](/runbooks/tls-sasl-or-acl-failures)
+without exposing credentials in task logs or troubleshooting commands.
+
+### Metrics migration
+
+Run old/new metric dashboards in parallel during the Kafka/Connect upgrade,
+map alert thresholds to their new semantics, and validate against direct
+source/target offset samples. Keep a recorded migration date on charts so a
+semantic discontinuity is not mistaken for an incident.
+
+## Safe rollback / stop
+
+- Do not fail over merely because a single lag metric rises; first calculate
+  the RPO from source/target/checkpoint evidence and get the application owner
+  to accept duplicate/loss exposure.
+- Stop changes that reduce target ISR/storage headroom or leave a connector
+  with no safe source/target authentication path.
+- Rolling back a connector config can duplicate records. Preserve offset and
+  checkpoint evidence, then test the rollback in a bounded topic/group.
+
+## Related
+
+- Workbench: [DR Tabletop Planner](/workbench/dr), [Capacity and N-1 Headroom](/workbench/capacity)
+- Protocol Lab: [Replication and failover](/protocol/replication-failover)
+- Runbooks: [Under-replicated or offline partitions](/runbooks/under-replicated-or-offline-partitions), [TLS, SASL, or ACL failures](/runbooks/tls-sasl-or-acl-failures)
+- KIP index: [KIP-877](/kips#kip-877)
+- Kafka primary source: [4.3.0 release notes](https://archive.apache.org/dist/kafka/4.3.0/RELEASE_NOTES.html)

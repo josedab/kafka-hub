@@ -1,0 +1,120 @@
+---
+title: "Under-replicated or offline partitions"
+description: "Separate degraded replication from no-leader unavailability, then recover replicas without turning a repair into data loss."
+date: "2026-07-26"
+tags: ["replication", "isr", "offline-partitions", "data-safety"]
+---
+
+## Symptom
+
+`UnderReplicatedPartitions` is non-zero, a topic describe shows replicas outside
+ISR, or an application sees `LEADER_NOT_AVAILABLE` / unavailable partitions.
+These are related but not interchangeable:
+
+- **Under-replicated partition (URP):** a leader exists, but one or more
+  assigned replicas are not in ISR. Reads/writes may still work; durability and
+  failure headroom are reduced.
+- **Offline/unavailable partition:** no live leader can serve the partition.
+  Reads and writes for that partition are unavailable until a safe leader path
+  is restored or an explicit data-loss decision is made.
+
+**Stop condition:** do not enable unclean leader election, delete replica
+directories, or reassign away the only known in-sync copy just to make a
+dashboard green. Escalate the data-loss trade-off with the topic owner first.
+
+This runbook is reviewed against Apache Kafka 4.3.1. Confirm exact command
+output and client tooling against the patch version you run.
+
+## Quick checks (in order)
+
+1. List the affected sets separately:
+   ```bash
+   kafka-topics.sh --bootstrap-server "$BS" --describe --under-replicated-partitions
+   kafka-topics.sh --bootstrap-server "$BS" --describe --unavailable-partitions
+   ```
+   Good: the sets are empty or shrinking. Bad: unavailable partitions are
+   growing, or URP spans multiple brokers/racks.
+2. Describe each affected topic-partition and record leader, replicas, ISR,
+   leader epoch, and the timestamp of the first alert. Good: a leader remains
+   in ISR. Bad: ISR is empty or every replica is offline.
+3. Identify the common failed broker/log directory/rack. Check broker process
+   health, controller logs, disk/inode space, filesystem errors, replication
+   fetch latency, and network loss before changing topic configuration.
+4. Check `min.insync.replicas`, producer `acks`, and current produce errors.
+   Good: `acks=all` producers fail safely below the minimum. Bad: availability
+   pressure is pushing teams to weaken the durability requirement without a
+   recorded decision.
+5. Check whether a reassignment, broker replacement, or network maintenance
+   coincided with the alert. Good: movement is progressing and has headroom.
+   Bad: replicas are repeatedly leaving ISR or target disks are full.
+6. For unavailable partitions, locate every replica's last known healthy
+   storage. Do not format, delete, or force-start a replacement until the
+   incident lead knows whether an in-sync replica can be restored.
+
+## Likely causes
+
+- **Broker or rack unavailable** — tell: the same broker/rack owns missing
+  replicas, and controller/broker health shows a real outage.
+- **Slow or broken disk/log directory** — tell: filesystem errors, high IO
+  latency, offline log-directory logs, or no free space coincide with ISR loss.
+- **Network/replication path degradation** — tell: replica fetch errors or
+  lag rise while broker processes remain up.
+- **Unsafe reassignment or capacity exhaustion** — tell: affected partitions
+  match moving replicas and target brokers lack disk/network headroom.
+- **No live replica for a partition** — tell: every assigned broker is down or
+  unable to mount the relevant log directory; the partition is unavailable, not
+  merely under-replicated.
+
+## Fixes
+
+### A broker or rack is temporarily unavailable
+
+Restore the failed broker/rack path before moving replicas. Verify the broker
+registers, its directories mount read-write, and follower fetch catches up.
+Let ISR re-form before treating the incident as resolved.
+
+```bash
+kafka-topics.sh --bootstrap-server "$BS" --describe --topic "$TOPIC"
+```
+
+If the broker returns but a replica cannot catch up, investigate its disk and
+network path rather than repeatedly restarting the process.
+
+### A log directory is full or offline
+
+Use [Disk full or log directory offline](/runbooks/disk-full-or-log-dir-offline)
+to distinguish filesystem pressure from an offline replica store. Relieve
+pressure with a bounded, policy-approved retention or reassignment action; do
+not remove log segments manually.
+
+### Replication is slow or network-degraded
+
+Restore the replication path, then remove only temporary throttles that are
+known to be constraining catch-up. Watch per-partition ISR, replica lag, disk
+queue depth, and client latency together. A faster reassignment can worsen the
+failure if it saturates the healthy brokers.
+
+### No live replica can lead the partition
+
+Treat this as a data-safety incident. Recover a known replica/storage path if
+possible. If business owners explicitly choose unclean recovery, record the
+affected topic-partitions, expected lost offset range, and validation plan
+before changing the setting. After availability is restored, preserve evidence
+and rebuild replication factor/ISR before declaring recovery complete.
+
+## Safe rollback / stop
+
+- Stop a reassignment if it reduces healthy-broker headroom or causes more ISR
+  loss; cancellation does not undo replicas already moved, so replan from the
+  observed state.
+- Roll back a maintenance change only after checking that no new replicas were
+  placed onto an unhealthy target.
+- Never use unclean leader election as an automatic rollback. It is an
+  acknowledged data-loss action.
+
+## Related
+
+- Learn: [ISR mechanics and acks semantics](/learn/isr-and-acks)
+- Protocol Lab: [Replication and failover](/protocol/replication-failover)
+- Simulate: [ISR shrink](/simulate?scenario=isr-shrink), [offline partition](/simulate?scenario=offline-partition)
+- Workbench: [Incident Triage](/workbench/incident), [Capacity and N-1 Headroom](/workbench/capacity)

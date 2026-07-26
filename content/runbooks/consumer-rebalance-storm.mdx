@@ -1,0 +1,122 @@
+---
+title: "Consumer rebalance storm"
+description: "Stop repeated group churn by separating membership failures, slow polling, deployment changes, assignment behavior, and the KIP-848 protocol."
+date: "2026-07-26"
+tags: ["consumers", "rebalances", "kip-848", "deployments", "lag"]
+---
+
+## Symptom
+
+Consumer group generations/epochs advance repeatedly, members repeatedly join
+and leave, partition processing pauses, commits fail, duplicate exposure rises,
+and lag follows a sawtooth pattern. A scale-out or rolling deploy can trigger
+the first event, but a continuing storm means the group cannot settle.
+
+Do not fix this by blindly adding members. A hot partition remains one
+partition, and every extra restart can produce more churn.
+
+## Quick checks (in order)
+
+1. Measure rebalance frequency and correlate each event with member churn,
+   deploys, restarts, autoscaling, node drains, GC pauses, and downstream
+   timeouts. Good: one expected event around a controlled change. Bad: a new
+   generation/epoch every few minutes or faster.
+2. Describe group membership and per-partition lag:
+   ```bash
+   kafka-consumer-groups.sh --bootstrap-server "$BS" --describe --group "$GROUP"
+   ```
+   Good: stable members with assigned partitions and falling lag. Bad: missing
+   members, rapid assignment changes, or one member/partition never progresses.
+3. Compare worst-case poll-to-complete time with `max.poll.interval.ms`.
+   Good: processing, retries, and GC complete well inside the interval. Bad:
+   `CommitFailedException`, poll-timeout logs, or a blocking model/database call
+   consumes the interval.
+4. Check `session.timeout.ms` and heartbeat behavior against observed GC/network
+   pauses. Good: no expiry during normal tail latency. Bad: the coordinator
+   evicts healthy-but-paused members.
+5. Identify the active group protocol and assignment behavior:
+   - classic eager vs classic cooperative-sticky;
+   - KIP-848 consumer protocol (`group.protocol=consumer`) with broker-side
+     assignment and group/member epochs.
+   Do not call all three “cooperative”; they have different coordination paths.
+6. Check deployment identity and static membership. Good: one logical member
+   owns one `group.instance.id` and rollout order is controlled. Bad: duplicate
+   static IDs, readiness probes that kill slow consumers, or a Deployment
+   replacing all members at once.
+7. Check consumer handler/downstream latency and partition skew. Good:
+   heartbeats and processing both progress. Bad: a process stays in the group
+   but its worker/executor is wedged, or one hot partition dominates lag.
+
+## Likely causes
+
+- **`max.poll.interval.ms` exceeded** — tell: long handler batches, blocking
+  calls, and commit failures occur just before reassignment.
+- **Session/heartbeat expiry** — tell: GC/network gaps align with member
+  eviction despite otherwise healthy processing.
+- **Crash-loop or deployment churn** — tell: pod lifecycle events and group
+  churn share timestamps.
+- **Static membership collision/misuse** — tell: duplicate instance identities
+  or stale members prevent a predictable rollout.
+- **Classic eager assignment behavior** — tell: every membership change pauses
+  all partitions, amplifying lag even when only one moves.
+- **Protocol migration mismatch** — tell: some clients/configs do not support
+  the intended classic cooperative or consumer-protocol path.
+- **Hot partition/downstream stall** — tell: the group remains joined but one
+  owner makes no progress and scaling cannot split its key.
+
+## Fixes
+
+### A slow poll loop or blocking handler
+
+Reduce records per poll, move bounded concurrent work behind the poll loop, and
+set `max.poll.interval.ms` above measured worst-case processing plus recovery
+margin. Do not increase it to hide indefinitely stuck work; add a watchdog
+that fails a wedged process so ownership can move.
+
+```properties
+max.poll.records=100
+max.poll.interval.ms=900000
+```
+
+### Deployment or crash churn
+
+Roll back the bad release or suspend autoscaling until the group reaches one
+stable generation/epoch. Restart one member at a time, wait for assignment and
+lag to stabilize, then continue. Use readiness checks that distinguish a
+temporary downstream slowdown from a dead consumer.
+
+### Static membership
+
+Make `group.instance.id` unique per concurrently running logical member and
+stable across a planned restart. Do not share a single value across Deployment
+replicas. Test expiration/recovery before relying on it during a broad rollout.
+
+### Assignment/protocol choice
+
+For classic clients, cooperative-sticky can reduce unnecessary partition
+movement compared with eager assignment. It is still a classic protocol.
+KIP-848's consumer protocol uses a broker-side coordinator and incremental
+reconciliation; validate client/broker support and migration order in a
+non-production group before changing production `group.protocol`.
+
+### Hot partition or slow dependency
+
+Scaling members cannot split work from one partition. Fix the key distribution,
+isolate the tenant/workload, or improve the downstream dependency. Pause only
+affected partitions when appropriate and keep the consumer heartbeating.
+
+## Safe rollback / stop
+
+- Do not change assignment strategy, group protocol, static membership, and
+  deployment topology in one rollout.
+- Stop a rollout when rebalance frequency rises or duplicated side effects
+  appear; restore the prior known-good client config/member count.
+- Treat a consumer crash as at-least-once work. Verify idempotent downstream
+  effects before forcing a member replacement.
+
+## Related
+
+- Learn: [Consumer group rebalances](/learn/consumer-rebalance), [classic to consumer protocol experiment](/notes/classic-to-consumer-protocol-experiment)
+- Protocol Lab: [Consumer Group](/protocol/consumer-group)
+- Simulate: [rebalance storm](/simulate?scenario=rebalance-storm), [KIP-848 consumer protocol](/simulate?scenario=rebalance-consumer-protocol)
+- Workbench: [Consumer Lag Triage](/workbench/lag), [Incident Triage](/workbench/incident)

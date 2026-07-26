@@ -1,6 +1,12 @@
 {
   "title": "Runbooks",
   "pages": [
+    "under-replicated-or-offline-partitions",
+    "disk-full-or-log-dir-offline",
+    "consumer-rebalance-storm",
+    "partition-reassignment-stuck",
+    "tls-sasl-or-acl-failures",
+    "mirrormaker-lag-or-divergence",
     "consumer-lag-climbing",
     "broker-wont-restart",
     "controller-flapping",

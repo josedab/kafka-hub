@@ -1,0 +1,120 @@
+---
+title: "Partition reassignment stuck"
+description: "Verify replica movement, isolate non-ISR, disk, network, and throttle blockers, then cancel or replan without assuming rollback."
+date: "2026-07-26"
+tags: ["reassignment", "replication", "capacity", "kafka-4.3.1"]
+---
+
+## Symptom
+
+A partition reassignment remains in progress far longer than expected, replica
+bytes do not converge, leader/ISR status worsens, or `--verify` continues to
+show incomplete movement. Reassignment competes with normal replication,
+client traffic, retention/compaction, and disk recovery; “still running” is
+evidence to inspect, not a reason to remove all throttles.
+
+Kafka 4.3 release notes include `KAFKA-19975`, **Reassignment completion
+blocked by non-ISR replicas**. This runbook is reviewed against Kafka 4.3.1.
+Treat that fix as versioned behavior to verify, not evidence that every stalled
+plan is harmless or self-resolving.
+
+## Quick checks (in order)
+
+1. Verify the exact reassignment plan and current status:
+   ```bash
+   kafka-reassign-partitions.sh \
+     --bootstrap-server "$BS" \
+     --reassignment-json-file reassignment.json \
+     --verify
+   ```
+   Record each affected topic-partition, old/new replicas, leader, ISR, and
+   remaining data movement. Good: bytes and ISR trend toward target. Bad: no
+   progress across several observation windows.
+2. Describe affected partitions and separate target replicas that are in ISR
+   from replicas that are merely assigned. Good: at least one healthy source
+   remains for every move. Bad: a target repeatedly leaves ISR or a source
+   replica is already unavailable.
+3. Check target and source broker disk bytes/inodes, filesystem errors, log-dir
+   state, network throughput, request queues, and replica fetch latency. Good:
+   targets have headroom and sustained catch-up. Bad: full/slow disks,
+   saturation, or network loss.
+4. Inspect active replication/reassignment throttles and their scope. Good:
+   bounded values match capacity and are applied only to the planned replicas.
+   Bad: forgotten low throttles, inconsistent dynamic configs, or no throttle
+   while client latency/ISR is deteriorating.
+5. Check for overlapping maintenance: broker restarts, log-directory repair,
+   controller instability, large retention deletes, or another reassignment.
+   Good: one controlled movement plan. Bad: concurrent moves compete for the
+   same disk/network budget.
+6. On Kafka 4.3.1, inspect whether a non-ISR replica is the blocker before
+   deciding to wait, cancel, or replan. Keep the observed version and state in
+   the incident record; do not extrapolate from a release-note title.
+
+## Likely causes
+
+- **Target disk cannot absorb the replica** — tell: usable space/inodes or
+  filesystem latency deteriorate while copy progress stalls.
+- **Network or replica-fetch bottleneck** — tell: source/target network and
+  fetch metrics saturate, with little byte progress.
+- **Throttle too tight or mis-scoped** — tell: movement rate matches a small
+  configured cap despite healthy brokers.
+- **Target replica cannot join ISR** — tell: lag repeatedly grows or target
+  drops out of ISR after partial catch-up.
+- **Non-ISR completion blocker** — tell: the reassignment waits on a
+  non-in-sync replica path; compare observed behavior to the deployed 4.3.1
+  release notes and logs.
+- **Overlapping maintenance** — tell: the same brokers are restarting,
+  compacting, or moving multiple large replica sets at once.
+
+## Fixes
+
+### Storage or network bottleneck
+
+Pause/cancel the smallest affected batch if headroom is endangered. Repair the
+disk/network issue or select different targets with verified capacity. Then
+generate a smaller plan and apply it in phases, watching ISR and client
+latency between phases.
+
+### Throttles are too restrictive
+
+Raise throttles gradually after confirming target disk/network headroom. Observe
+replication bytes, ISR, and client latency over a bounded interval. Remove
+temporary throttles when the plan completes; leaving them behind creates a
+future “stuck” incident that is hard to explain.
+
+### Target replica will not join ISR
+
+Fix the target's storage/network/broker health first. A larger throttle cannot
+make a broken replica safe. If target selection is wrong, cancel the plan and
+replan to a healthy broker rather than repeatedly restarting the target.
+
+### Reassignment waits on non-ISR replicas
+
+Use the observed assignment/ISR state and 4.3.1 broker logs to decide whether
+the replica is recovering, failed, or no longer a valid target. `KAFKA-19975`
+is relevant context, but do not use it to skip the replica-safety review.
+Replan only after preserving a healthy in-sync source for every partition.
+
+## Safe rollback / stop
+
+Cancel a problematic plan with the same plan file only after recording the
+current state:
+
+```bash
+kafka-reassign-partitions.sh \
+  --bootstrap-server "$BS" \
+  --reassignment-json-file reassignment.json \
+  --cancel
+```
+
+Cancellation stops pending movement; it does not revert replicas that have
+already moved. Regenerate a plan from the post-cancel assignment. Stop
+immediately if an action would leave no in-sync source, consumes N-1 storage
+headroom, or causes expanding URP/offline-partition counts.
+
+## Related
+
+- Kafka primary source: [4.3.0 release notes](https://archive.apache.org/dist/kafka/4.3.0/RELEASE_NOTES.html)
+- Runbooks: [Under-replicated or offline partitions](/runbooks/under-replicated-or-offline-partitions), [Disk full or log directory offline](/runbooks/disk-full-or-log-dir-offline)
+- Workbench: [Capacity and N-1 Headroom](/workbench/capacity)
+- Protocol Lab: [Replication and failover](/protocol/replication-failover)

@@ -1,0 +1,124 @@
+---
+title: "Disk full or log directory offline"
+description: "Gather filesystem evidence, protect replicas, relieve pressure safely, and distinguish Kafka 4.3 cordoning from disk evacuation."
+date: "2026-07-26"
+tags: ["storage", "log-dirs", "retention", "cordoning", "replication"]
+---
+
+## Symptom
+
+A broker reports `No space left on device`, a log directory becomes offline,
+disk/inode use approaches the operating threshold, or replicas leave ISR while
+one filesystem shows errors. The immediate question is whether this is:
+
+- **capacity pressure** — the directory is functioning but nearly full; or
+- **an offline log directory** — Kafka cannot safely use the directory because
+  the filesystem/path has failed, become read-only, or returned IO errors.
+
+Do not treat either as permission to delete Kafka segment files. A directory
+can contain the only current replica data for a partition.
+
+## Quick checks (in order)
+
+1. Capture filesystem bytes, inode use, mount mode, and kernel/storage errors
+   for the affected host. Good: one bounded high-watermark condition with a
+   healthy read-write filesystem. Bad: read-only remounts, IO errors, missing
+   paths, inode exhaustion, or errors across several disks.
+   ```bash
+   df -h /var/lib/kafka
+   df -i /var/lib/kafka
+   ```
+2. Check broker logs for the exact log-directory path and whether Kafka marked
+   it offline. Record the timestamp before restarting the broker.
+3. Describe Kafka's view without exposing credentials:
+   ```bash
+   kafka-log-dirs.sh --bootstrap-server "$BS" --describe --broker-list "$BROKER_ID"
+   ```
+   Compare partition replica sizes, offsets, and error state with the
+   filesystem evidence.
+4. List affected partitions and ISR before any retention/reassignment change.
+   Good: every replica to be moved has an in-sync source. Bad: the directory
+   hosts the only viable copy or multiple replicas are already out of ISR.
+5. Identify the growth driver: retention policy, compaction backlog, a hot
+   partition, replication/reassignment traffic, remote-storage cache, or a
+   runaway producer. Measure bytes per topic-partition rather than only the
+   host percentage.
+6. Check free capacity on every potential target broker, including N-1
+   headroom. Do not turn a full-disk incident into a wider rebalance incident.
+
+## Likely causes
+
+- **Retention/capacity pressure** — tell: filesystem works, bytes rise at a
+  predictable ingest/retention slope, and log-dir APIs show no path failure.
+- **Inode exhaustion** — tell: bytes remain available but file creation fails
+  and `df -i` is exhausted.
+- **Offline filesystem/directory** — tell: Kafka logs a storage error,
+  filesystem errors/read-only mount, or `kafka-log-dirs.sh` reports directory
+  failure.
+- **Uneven partition placement or hot partition** — tell: one directory holds
+  an outsized share of partition bytes or ingest.
+- **Reassignment/tiered-storage pressure** — tell: incident timing overlaps
+  replica movement or remote-cache activity and network/disk queues saturate.
+
+## Fixes
+
+### Capacity pressure with healthy storage
+
+Use the smallest reversible relief action first:
+
+1. Pause nonessential producers or reduce burst ingestion where business
+   policy permits.
+2. Remove safe, expired data by applying a topic-level retention change that
+   the data owner approves.
+3. Move a bounded set of replicas only to brokers with proven headroom.
+4. Expand storage/brokers before restoring full traffic if the capacity model
+   says the new headroom is transient.
+
+Do not lower retention below legal, replay, or DR requirements as an emergency
+default. Document old/new values, expected reclaimed range, and the reversal
+condition before applying a temporary policy.
+
+### Offline log directory
+
+Treat the filesystem issue as a storage repair, not an application tuning
+problem. Repair/mount the path or replace the disk according to platform
+procedure. If replicas must move, first verify an in-sync source for each
+partition and use a bounded reassignment plan. Preserve the failed directory
+for forensic/recovery handling until replica safety is confirmed.
+
+### Uneven placement or hot partitions
+
+Use `kafka-log-dirs.sh` output plus topic/partition growth rates to build a
+targeted plan. Avoid moving every large replica at once; apply throttles where
+needed, verify ISR at each phase, then increase the batch only if healthy
+brokers remain healthy.
+
+### Kafka 4.3 cordoning before planned work
+
+[KIP-1066](https://cwiki.apache.org/confluence/spaces/KAFKA/pages/311627566/KIP-1066+Mechanism+to+cordon+brokers+and+log+directories)
+(`KAFKA-19774`) adds `cordoned.log.dirs` so no new partitions are allocated to
+selected directories. In Kafka 4.3, cordoning is **prevention**, not
+evacuation: existing replicas remain and bytes are not moved or freed.
+
+Use it before planned disk/broker removal after verifying metadata-version
+prerequisites and usable capacity. Do not present it as a fix for an already
+offline or full directory.
+
+## Safe rollback / stop
+
+- Stop retention reduction if it would delete data outside the incident's
+  approved recovery point objective.
+- Stop reassignment if target disks or ISR worsen; cancel and replan from the
+  current replica layout rather than assuming cancellation rolls back movement.
+- Do not remove directories, format disks, or delete `.log` files until a
+  replica-safety review identifies recoverable copies.
+- Uncordon only after the directory is healthy and a placement review says new
+  replicas may safely return.
+
+## Related
+
+- Field Note: [Kafka 4.3 for operators](/notes/kafka-4-3-for-operators)
+- KIP index: [KIP-1066](/kips#kip-1066)
+- Learn: [Log compaction internals](/learn/log-compaction), [ISR mechanics](/learn/isr-and-acks)
+- Workbench: [Capacity and N-1 Headroom](/workbench/capacity), [Incident Triage](/workbench/incident)
+- Protocol Lab: [Replication and failover](/protocol/replication-failover)

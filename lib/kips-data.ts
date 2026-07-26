@@ -236,6 +236,17 @@ export const kips: KipEntry[] = [
     kipUrl: "https://cwiki.apache.org/confluence/display/KAFKA/KIP-866+ZooKeeper+to+KRaft+Migration",
   },
   {
+    id: 877,
+    title: "Mechanism for plugins and connectors to register metrics",
+    status: "adopted",
+    plainSummary:
+      "KIP-877 defines Monitorable and PluginMetrics so Kafka plugins and Connect components can register metrics through the component that creates them, inheriting its namespace and identifying tags. The KIP names MirrorMaker 2 source and checkpoint connectors as affected Connect use cases.",
+    why:
+      "It makes plugin and connector metrics more consistently scoped and tagged, which matters when an operator maps MirrorMaker dashboards across version changes.",
+    kipUrl:
+      "https://cwiki.apache.org/confluence/spaces/KAFKA/pages/231116181/KIP-877+Mechanism+for+plugins+and+connectors+to+register+metrics",
+  },
+  {
     id: 878,
     title: "Autoscaling for Stateless & Statically Partitioned Streams",
     status: "adopted",
@@ -253,5 +264,26 @@ export const kips: KipEntry[] = [
     why: "It protects exactly-once semantics against delayed requests, buggy clients, and transaction states that previously could stall read_committed consumers.",
     learnSlug: "exactly-once",
     kipUrl: "https://cwiki.apache.org/confluence/display/KAFKA/KIP-890%3A+Transactions+Server-Side+Defense",
+  },
+  {
+    id: 932,
+    title: "Queues for Kafka (Share Groups)",
+    status: "adopted",
+    versionShipped: "4.2.0",
+    plainSummary: "KIP-932 introduces share groups: a queue-like consumption model where many consumers cooperatively read from the same partitions and acknowledge individual records rather than owning exclusive partition ranges. Records are leased with an acquisition lock and can be accepted, released, or rejected independently; Kafka 4.2 made the feature production-ready.",
+    why: "Classic consumer groups cap parallelism at the partition count and demand careful partitioning for fan-out work. Share groups let queue-like, per-record workloads — including AI agent tool-call and job-processing pipelines — scale consumers independently of partition count.",
+    kipUrl: "https://cwiki.apache.org/confluence/display/KAFKA/KIP-932%3A+Queues+for+Kafka",
+  },
+  {
+    id: 1066,
+    title: "Mechanism to cordon brokers and log directories",
+    status: "adopted",
+    versionShipped: "4.3.0",
+    plainSummary:
+      "KIP-1066 adds cordoned log directories through the per-broker cordoned.log.dirs configuration. Cordoned directories continue serving existing replicas but are excluded from new partition and replica placement; cordoning every directory makes a broker ineligible for new placement.",
+    why:
+      "It gives operators a placement guardrail before disk or broker maintenance, scale-down, and capacity changes without pretending to evacuate existing replicas automatically.",
+    kipUrl:
+      "https://cwiki.apache.org/confluence/spaces/KAFKA/pages/311627566/KIP-1066+Mechanism+to+cordon+brokers+and+log+directories",
   },
 ];

@@ -25,8 +25,27 @@ describe("resolveCanonicalOrigin", () => {
     assert.equal(resolveCanonicalOrigin("https://user@example.com"), "https://kafka-hub.dev");
   });
 
-  it("strips path/query/fragment and returns origin", () => {
-    assert.equal(resolveCanonicalOrigin("https://kafka-hub.dev/learn?q=1#top"), "https://kafka-hub.dev");
+  it("rejects non-root paths, queries, and fragments", () => {
+    assert.equal(
+      resolveCanonicalOrigin("https://example.com/learn"),
+      "https://kafka-hub.dev",
+    );
+    assert.equal(
+      resolveCanonicalOrigin("https://example.com/?q=1"),
+      "https://kafka-hub.dev",
+    );
+    assert.equal(
+      resolveCanonicalOrigin("https://example.com/#top"),
+      "https://kafka-hub.dev",
+    );
+    assert.equal(
+      resolveCanonicalOrigin("https://example.com?"),
+      "https://kafka-hub.dev",
+    );
+    assert.equal(
+      resolveCanonicalOrigin("https://example.com#"),
+      "https://kafka-hub.dev",
+    );
   });
 
   it("accepts valid https origin", () => {

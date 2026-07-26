@@ -11,7 +11,7 @@ const FALLBACK_ORIGIN = "https://kafka-hub.dev";
  * Validate that a string is a valid http/https origin:
  * - Must start with http:// or https://
  * - No credentials (user:pass@)
- * - No path, query, or fragment
+ * - No non-root path, query, or fragment
  */
 export function resolveCanonicalOrigin(raw?: string): string {
   const value = raw?.trim();
@@ -32,7 +32,17 @@ export function resolveCanonicalOrigin(raw?: string): string {
     return FALLBACK_ORIGIN;
   }
 
-  // Origin is scheme + host (+ port if non-default) — no path/query/fragment
+  // Accept an origin with an optional root slash, but never normalize away
+  // path/query/fragment input that would produce misleading canonical URLs.
+  if (
+    url.pathname !== "/" ||
+    url.search ||
+    url.hash ||
+    url.href !== `${url.origin}/`
+  ) {
+    return FALLBACK_ORIGIN;
+  }
+
   return url.origin;
 }
 

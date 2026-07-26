@@ -21,8 +21,9 @@ cluster mechanics. Pure TypeScript, no React dependency.
   `shrinkIsrLag`, `inducePartition`, `healPartition`
 - **Consumer operations** — consumerJoin, consumerLeave, consumerCrash,
   consumerRestart, consumerScaleOut, consumerRollingRestartStep
-- **7 scenarios** — quorum-loss, slow-consumer, isr-shrink, network-partition,
-  rebalance-eager-classic, rebalance-cooperative-classic, rebalance-consumer-protocol
+- **10 scenarios** — quorum-loss, slow-consumer, isr-shrink, network-partition,
+  rebalance-eager-classic, rebalance-cooperative-classic, rebalance-consumer-protocol,
+  hot-partition, rebalance-storm, offline-partition
 - **Structured events** — `RebalanceEvent` with protocol axes, epochs, partition
   moves, duplicate-risk level, reconciliation state, assignor
 - **Embeddable** — runs in browser, Node, or Web Worker
@@ -63,7 +64,11 @@ consumed by the operation.
 
 ### `SCENARIOS` / `SCENARIO_LIST`
 
-Object map and ordered list of all 7 built-in scenarios.
+Object map and ordered list of all 10 built-in scenarios. The content-wave
+additions model a heavy single partition despite an idle group member
+(`hot-partition`), repeated eager membership churn with pause/duplicate-risk/lag
+(`rebalance-storm`), and an RF=2 partition with no live replica followed by
+leadership/ISR recovery (`offline-partition`).
 
 ## Invariants
 
@@ -76,7 +81,7 @@ The engine maintains these invariants across all operations:
 ## Tests
 
 ```bash
-pnpm test    # 87 node:test cases
+pnpm test    # 90 node:test cases (last verified 2026-07-26)
 ```
 
 ## License

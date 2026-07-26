@@ -11,6 +11,7 @@ import {
   consumerRestart,
   consumerScaleOut,
   consumerRollingRestartStep,
+  totalLag,
   SCENARIOS,
   SCENARIO_LIST,
   runOp,
@@ -134,6 +135,104 @@ test("scenario: all existing scenarios still work unchanged", () => {
       assertAssignedExist(s, `${scenario.slug}:op${i}`);
     }
   }
+});
+
+// ───────────────────────── content-wave behavioral scenarios ─────────────────────────
+
+test("scenario: hot-partition exposes skew while a third group member is idle", () => {
+  const scenario = SCENARIOS["hot-partition"];
+  assert.ok(scenario, "hot-partition scenario should exist");
+  let state = createCluster(scenario.cluster);
+  if (scenario.consumerGroup) state = addConsumerGroup(state, scenario.consumerGroup);
+
+  for (const [index, operation] of scenario.script.entries()) {
+    const previous = state;
+    state = runOp(state, operation).state;
+    assertTransitionInvariants(previous, state, `hot-partition:op${index}`);
+  }
+
+  const group = state.groups[0];
+  const idleMember = group.members.find((member) => member.id === "c-3");
+  const partitionLag = (partitionId: number) => {
+    const partition = state.topic.partitions[partitionId];
+    return partition.hw - (group.groupCommitted[partitionId] ?? 0);
+  };
+
+  assert.equal(idleMember?.assigned.length, 0, "spare member cannot own a partition");
+  assert.ok(
+    partitionLag(0) > partitionLag(1),
+    `hot partition must have more lag (p0=${partitionLag(0)}, p1=${partitionLag(1)})`,
+  );
+  assert.ok(partitionLag(0) > 0, "heavy partition should retain a visible backlog");
+});
+
+test("scenario: rebalance-storm accumulates eager pauses, duplicate risk, and lag", () => {
+  const scenario = SCENARIOS["rebalance-storm"];
+  assert.ok(scenario, "rebalance-storm scenario should exist");
+
+  function replay() {
+    let state = createCluster(scenario.cluster);
+    if (scenario.consumerGroup) state = addConsumerGroup(state, scenario.consumerGroup);
+    for (const [index, operation] of scenario.script.entries()) {
+      const previous = state;
+      state = runOp(state, operation).state;
+      assertTransitionInvariants(previous, state, `rebalance-storm:op${index}`);
+    }
+    return state;
+  }
+
+  const state = replay();
+  const duplicateReplay = replay();
+  const group = state.groups[0];
+  const churn = group.rebalanceEvents.filter((event) => event.operation !== "join");
+  const totalPauseTicks = churn.reduce((total, event) => total + event.pauseTicks, 0);
+
+  assert.equal(group.groupProtocol, "classic");
+  assert.equal(group.classicAssignmentBehavior, "eager");
+  assert.ok(churn.length >= 5, `expected repeated churn, got ${churn.length} events`);
+  assert.ok(totalPauseTicks >= 5, `expected accumulated eager pauses, got ${totalPauseTicks}`);
+  assert.ok(
+    churn.some(
+      (event) =>
+        event.operation === "crash" && event.duplicateRisk.level === "elevated",
+    ),
+    "crash must expose elevated duplicate risk",
+  );
+  assert.ok(totalLag(state) > 0, "backlog should remain after the scripted storm");
+  assert.deepEqual(state, duplicateReplay, "scenario replay must be deterministic");
+});
+
+test("scenario: offline-partition loses all RF=2 replicas then restores leadership and ISR", () => {
+  const scenario = SCENARIOS["offline-partition"];
+  assert.ok(scenario, "offline-partition scenario should exist");
+  let state = createCluster(scenario.cluster);
+
+  for (const [index, operation] of scenario.script.slice(0, 6).entries()) {
+    const previous = state;
+    state = runOp(state, operation).state;
+    assertTransitionInvariants(previous, state, `offline-partition:failure-op${index}`);
+  }
+
+  const offline = state.topic.partitions[0];
+  assert.equal(offline.replicas.length, 2);
+  assert.equal(offline.isr.length, 0, "partition 0 must have no live replica");
+  assert.ok(
+    state.events.some((event) => event.message.includes("produce p0: rejected")),
+    "produce during no-leader interval must be rejected",
+  );
+
+  for (const [index, operation] of scenario.script.slice(6).entries()) {
+    const previous = state;
+    state = runOp(state, operation).state;
+    assertTransitionInvariants(previous, state, `offline-partition:recovery-op${index}`);
+  }
+
+  const recovered = state.topic.partitions[0];
+  assert.deepEqual(recovered.isr, recovered.replicas, "RF=2 ISR should fully restore");
+  assert.ok(
+    state.events.some((event) => event.message.includes("broker 1 recovered")),
+    "recovery should expose broker return in the event log",
+  );
 });
 
 // ───────────────────────── scale-out partition movement ─────────────────────────
@@ -261,4 +360,3 @@ test("step: dead consumers do not consume", () => {
 // ═══════════════════════════════════════════════════════════════════════
 //  NEW TESTS: Feature hardening for KIP-848 lab
 // ═══════════════════════════════════════════════════════════════════════
-

@@ -17,12 +17,12 @@ export type GlossaryTerm = {
 };
 
 export const learnArticleTitles = {
-  "consumer-rebalance": "consumer-rebalance",
-  "controller-and-metadata": "controller-and-metadata",
-  "exactly-once": "exactly-once",
-  "isr-and-acks": "isr-and-acks",
-  "log-compaction": "log-compaction",
-  "unclean-leader-election": "unclean-leader-election",
+  "consumer-rebalance": "Consumer group rebalances",
+  "controller-and-metadata": "The controller and metadata",
+  "exactly-once": "Exactly-once semantics",
+  "isr-and-acks": "ISR mechanics and acks semantics",
+  "log-compaction": "Log compaction internals",
+  "unclean-leader-election": "Quorum loss and unclean leader election",
 } as const satisfies Record<LearnArticleSlug, string>;
 
 export const glossaryTerms = [

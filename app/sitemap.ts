@@ -1,11 +1,11 @@
 import type { MetadataRoute } from "next";
 import { rules } from "@/lib/diagnostic-rules";
-import { runbookSource, source } from "@/lib/source";
+import { notesSource, runbookSource, source } from "@/lib/source";
 import { cheatsheets } from "@/lib/cheatsheet-data";
 import { errors } from "@/lib/errors-data";
 import { CANONICAL_ORIGIN } from "@/lib/canonical-origin";
 import { WORKBENCH_TOOLS } from "@/lib/workbench-registry";
-import { SCENARIO_LIST } from "@kafka-hub/kafka-sim";
+import { PROTOCOL_LABS } from "@/lib/protocol-lab";
 
 const BASE = CANONICAL_ORIGIN;
 
@@ -15,19 +15,30 @@ export default function sitemap(): MetadataRoute.Sitemap {
   const staticRoutes: MetadataRoute.Sitemap = [
     { url: `${BASE}/`, lastModified: now, changeFrequency: "weekly", priority: 1 },
     { url: `${BASE}/learn`, lastModified: now, changeFrequency: "weekly", priority: 0.9 },
+    { url: `${BASE}/notes`, lastModified: now, changeFrequency: "weekly", priority: 0.9 },
     { url: `${BASE}/diagnose`, lastModified: now, changeFrequency: "monthly", priority: 0.8 },
     { url: `${BASE}/diagnose/rules`, lastModified: now, changeFrequency: "monthly", priority: 0.7 },
     { url: `${BASE}/simulate`, lastModified: now, changeFrequency: "monthly", priority: 0.8 },
+    { url: `${BASE}/protocol`, lastModified: now, changeFrequency: "monthly", priority: 0.8 },
     { url: `${BASE}/runbooks`, lastModified: now, changeFrequency: "weekly", priority: 0.8 },
     { url: `${BASE}/errors`, lastModified: now, changeFrequency: "monthly", priority: 0.8 },
     { url: `${BASE}/kips`, lastModified: now, changeFrequency: "monthly", priority: 0.8 },
     { url: `${BASE}/workbench`, lastModified: now, changeFrequency: "monthly", priority: 0.7 },
     { url: `${BASE}/rss.xml`, lastModified: now, changeFrequency: "weekly", priority: 0.3 },
+    { url: `${BASE}/notes/rss.xml`, lastModified: now, changeFrequency: "weekly", priority: 0.3 },
   ];
 
   // Workbench tool routes from authoritative registry
   const workbenchRoutes: MetadataRoute.Sitemap = WORKBENCH_TOOLS.map((tool) => ({
     url: `${BASE}/workbench/${tool.slug}`,
+    lastModified: now,
+    changeFrequency: "monthly" as const,
+    priority: 0.7,
+  }));
+
+  // Protocol Lab routes from authoritative registry
+  const protocolLabRoutes: MetadataRoute.Sitemap = PROTOCOL_LABS.map((lab) => ({
+    url: `${BASE}/protocol/${lab.slug}`,
     lastModified: now,
     changeFrequency: "monthly" as const,
     priority: 0.7,
@@ -66,6 +77,19 @@ export default function sitemap(): MetadataRoute.Sitemap {
       };
     });
 
+  const noteRoutes: MetadataRoute.Sitemap = notesSource
+    .getPages()
+    .filter((p) => p.slugs.length > 0)
+    .map((p) => {
+      const date = (p.data as { date?: string }).date;
+      return {
+        url: `${BASE}${p.url}`,
+        lastModified: date ? new Date(date) : now,
+        changeFrequency: "monthly" as const,
+        priority: 0.7,
+      };
+    });
+
   const ruleRoutes: MetadataRoute.Sitemap = rules.map((rule) => ({
     url: `${BASE}/diagnose/rules/${rule.id}`,
     lastModified: now,
@@ -80,21 +104,15 @@ export default function sitemap(): MetadataRoute.Sitemap {
     priority: 0.6,
   }));
 
-  const embedRoutes: MetadataRoute.Sitemap = SCENARIO_LIST.map((s) => ({
-    url: `${BASE}/simulate/embed/${s.slug}`,
-    lastModified: now,
-    changeFrequency: "monthly" as const,
-    priority: 0.4,
-  }));
-
   return [
     ...staticRoutes,
     ...workbenchRoutes,
+    ...protocolLabRoutes,
     ...articleRoutes,
     ...cheatsheetRoutes,
     ...runbookRoutes,
+    ...noteRoutes,
     ...ruleRoutes,
     ...errorRoutes,
-    ...embedRoutes,
   ];
 }

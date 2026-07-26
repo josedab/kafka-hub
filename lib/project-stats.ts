@@ -12,6 +12,7 @@ import { cheatsheets } from "./cheatsheet-data";
 import { WORKBENCH_TOOLS } from "./workbench-registry";
 import { rules } from "./diagnostic-rules";
 import { SCENARIO_LIST } from "@kafka-hub/kafka-sim";
+import { PROTOCOL_LABS } from "./protocol-lab";
 import packageJson from "../package.json";
 
 export const PROJECT_STATS = {
@@ -22,6 +23,7 @@ export const PROJECT_STATS = {
   cheatsheetCount: cheatsheets.length,
   workbenchToolCount: WORKBENCH_TOOLS.length,
   scenarioCount: SCENARIO_LIST.length,
+  protocolLabCount: PROTOCOL_LABS.length,
 } as const;
 
 /**

@@ -11,7 +11,7 @@ export function ScenarioPicker({
   onChange: (slug: string) => void;
 }) {
   return (
-    <div className="grid min-w-0 gap-2 sm:grid-cols-2 lg:grid-cols-4" role="radiogroup" aria-label="Select a scenario">
+    <div className="grid min-w-0 gap-2 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-5" role="radiogroup" aria-label="Select a scenario">
       {SCENARIO_LIST.map((s) => (
         <button
           key={s.slug}

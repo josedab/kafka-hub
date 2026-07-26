@@ -2,7 +2,7 @@
  * Unified local search index for Fumadocs `createSearchAPI("simple")`.
  *
  * Content is read from version-controlled MDX at index-build time so Learn
- * and Runbook body text remains searchable alongside structured data surfaces.
+ * and Field Notes body text remains searchable alongside structured data surfaces.
  */
 
 import { readdirSync, readFileSync } from "node:fs";
@@ -14,6 +14,7 @@ import { cheatsheets } from "./cheatsheet-data";
 import { rules, RULE_DOCUMENTATION } from "./diagnostic-rules";
 import { SCENARIO_LIST } from "@kafka-hub/kafka-sim";
 import { WORKBENCH_TOOLS } from "./workbench-registry";
+import { PROTOCOL_LABS } from "./protocol-lab";
 
 interface MdxFrontmatter {
   title: string;
@@ -68,8 +69,8 @@ function toSearchableText(mdx: string): string {
 }
 
 function mdxIndexes(
-  directory: "learn" | "runbooks",
-  label: "Learn" | "Runbooks",
+  directory: "learn" | "runbooks" | "notes",
+  label: "Learn" | "Runbooks" | "Field Notes",
 ): Index[] {
   const contentDir = join(process.cwd(), "content", directory);
 
@@ -205,15 +206,28 @@ function workbenchToolIndexes(): Index[] {
   }));
 }
 
+function protocolLabIndexes(): Index[] {
+  return PROTOCOL_LABS.map((lab) => ({
+    title: lab.title,
+    description: lab.tagline,
+    url: `/protocol/${lab.slug}`,
+    breadcrumbs: ["Protocol", lab.title],
+    content: [lab.tagline, lab.blurb, ...lab.focusAreas, ...lab.variants.map((v) => v.label)].join(" "),
+    keywords: [lab.slug, "protocol lab", ...lab.focusAreas].join(" "),
+  }));
+}
+
 export function buildSearchIndexes(): Index[] {
   return [
     ...mdxIndexes("learn", "Learn"),
     ...mdxIndexes("runbooks", "Runbooks"),
+    ...mdxIndexes("notes", "Field Notes"),
     ...errorIndexes(),
     ...kipIndexes(),
     ...cheatsheetIndexes(),
     ...ruleIndexes(),
     ...scenarioIndexes(),
     ...workbenchToolIndexes(),
+    ...protocolLabIndexes(),
   ].sort((a, b) => a.url.localeCompare(b.url));
 }

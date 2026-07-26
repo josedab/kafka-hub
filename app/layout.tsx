@@ -18,6 +18,7 @@ export const metadata: Metadata = {
     types: {
       "application/rss+xml": [
         { url: "/rss.xml", title: `${site.name} — Learn` },
+        { url: "/notes/rss.xml", title: `${site.name} — Field Notes` },
       ],
     },
   },

@@ -24,6 +24,7 @@ describe("unified search index", () => {
     const urls = indexes.map((index) => index.url);
     const requiredPrefixes = [
       "/learn",
+      "/notes/",
       "/runbooks/",
       "/diagnose/rules/",
       "/errors/",
@@ -41,16 +42,20 @@ describe("unified search index", () => {
     }
   });
 
-  test("indexes Learn and Runbook body text, not only metadata", () => {
+  test("indexes Learn, Field Notes, and Runbook body text, not only metadata", () => {
     const rebalance = indexes.find(
       (index) => index.url === "/learn/consumer-rebalance",
     );
     const brokerRunbook = indexes.find(
       (index) => index.url === "/runbooks/broker-wont-restart",
     );
+    const fieldNote = indexes.find(
+      (index) => index.url === "/notes/kafka-4-3-for-operators",
+    );
 
     assert.match(rebalance?.content ?? "", /JoinGroup/i);
     assert.match(brokerRunbook?.content ?? "", /log director|log\.dirs|storage/i);
+    assert.match(fieldNote?.content ?? "", /cordon|KIP-1066/i);
   });
 
   test("known queries return the expected surfaces through Fumadocs", async () => {
@@ -61,6 +66,7 @@ describe("unified search index", () => {
       ["KRaft transition", "/workbench/kraft"],
       ["listener topology", "/workbench/listeners"],
       ["consumer lag", "/workbench/lag"],
+      ["cordoned log directories", "/notes/kafka-4-3-for-operators"],
     ] as const;
 
     for (const [query, expectedUrl] of cases) {

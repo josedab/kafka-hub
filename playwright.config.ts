@@ -2,7 +2,7 @@ import { defineConfig, devices } from "@playwright/test";
 
 /**
  * Playwright configuration for browser smoke tests.
- * Chromium only. Uses the Next.js production server for reliability.
+ * Chromium only. Uses the generated standalone production server.
  * Reuses an existing server outside CI to avoid rebuilding on every run.
  */
 export default defineConfig({
@@ -31,6 +31,6 @@ export default defineConfig({
     command: process.env.CI ? "pnpm start" : "pnpm build && pnpm start",
     url: "http://localhost:3000",
     reuseExistingServer: !process.env.CI,
-    timeout: 180_000,
+    timeout: 300_000,
   },
 });

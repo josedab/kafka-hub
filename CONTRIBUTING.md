@@ -18,7 +18,7 @@ In priority order:
 1. **Bug reports.** Especially anything in the diagnostic engine that produces
    a false positive or misses an obvious footgun.
 2. **New diagnostic rules.** See below.
-3. **Learn articles.** See below.
+3. **Learn articles and Field Notes.** See below.
 4. **Simulator scenarios.** See below.
 5. **Workbench tool improvements.** Each tool has its own engine in
    `packages/kafka-planners/` or `packages/incident-parser/`.
@@ -50,14 +50,28 @@ pnpm typecheck
 pnpm lint
 pnpm test
 pnpm test:coverage
-pnpm test:browser      # requires Chromium: corepack pnpm exec playwright install chromium
 pnpm build
+pnpm test:browser      # requires Chromium: corepack pnpm exec playwright install chromium
+NEXT_PUBLIC_SITE_URL=https://kafka-hub.dev pnpm check:production-env
 corepack pnpm audit --prod
 ```
 
 PR CI keeps the production audit informational because advisory data can
 change independently of a pull request. A scheduled/manual workflow installs
 the frozen lockfile and hard-fails on high or critical production advisories.
+CI also boots the exact `.next/standalone/server.js` output and verifies the
+dynamic health endpoint.
+
+Deployment behavior, build-time/runtime variables, and production smoke checks
+are documented in [`docs/production.md`](docs/production.md).
+
+## Security and conduct reports
+
+Report suspected vulnerabilities privately using the process in
+[`SECURITY.md`](SECURITY.md), not a public issue. Never attach credentials,
+private Kafka configuration, or customer data.
+
+Participation is governed by [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md).
 
 ## How to add a Diagnose rule
 
@@ -124,11 +138,41 @@ best-effort; tests do not prove arbitrary input is secret-free.
    description: One-line description.
    date: "2026-07-01"
    scenarios: ["slow-consumer"]
+   tags: ["replication", "operations"]
    ```
-2. Register the slug in `content/learn/meta.json`.
+2. Register the slug in `content/learn/meta.json`. Add it to a metadata-driven
+   track only when it has a clear ordered prerequisite path; do not add
+   article-specific routing code.
 3. Encouraged: add an interactive component in `components/demos/`.
 4. Run `pnpm build`. The article auto-appears in sidebar, RSS, sitemap, and
    the homepage.
+
+## How to add a Field Note
+
+Field Notes are dated engineering records, not evergreen documentation. Create
+`content/notes/<slug>.mdx`, register it in `content/notes/meta.json`, and use
+the typed frontmatter:
+
+```yaml
+title: "Concise operating observation"
+description: "What changed, what was tested, and the bounded conclusion."
+date: "2026-07-26"
+kind: "field-note" # or "experiment"
+tags: ["kafka-4.3.1", "operations"]
+reviewedAgainst: "Reviewed against Apache Kafka 4.3.1" # optional
+featured: false # optional
+```
+
+- State the observed version/date and cite primary sources for time-sensitive
+  claims.
+- Separate confirmed behavior, experiment conditions, and open questions.
+- Link to the relevant Learn, Runbook, Protocol Lab, Simulate scenario, or
+  Workbench route when it exists.
+- Do not put secrets, raw customer data, or hidden chain-of-thought in a note.
+
+Notes automatically appear on `/notes`, `/notes/rss.xml`, search, sitemap, and
+the homepage's static latest-article list. Run `pnpm test:unit` to validate all
+local Learn, Runbook, and Field Note links.
 
 ## How to add a Simulate scenario
 
@@ -158,6 +202,27 @@ Partition moves complete within one tick (one-tick pending reconciliation).
 
 Invariants: ownership uniqueness, epoch monotonicity, determinism, committed
 offset preservation, protocol-specific pause/risk assertions.
+
+## How to add a Protocol Lab
+
+1. Add a lab slug to `PROTOCOL_LAB_SLUGS` in `lib/protocol-lab/types.ts`.
+2. Add a builder module at `lib/protocol-lab/labs/<slug>.ts` exporting a
+   `ProtocolLab` built from pure, deterministic data — actors, one or more
+   `ProtocolVariant`s, each a fully precomputed array of `ProtocolStep`s.
+   Every step needs a narrative and a state snapshot; request/response steps
+   should also carry a `WireFrame` (used by Wire mode).
+3. Register the lab in `lib/protocol-lab/registry.ts` (`PROTOCOL_LABS`).
+4. `app/protocol/[slug]/page.tsx` picks it up automatically via
+   `generateStaticParams()` — no new route file needed.
+5. Add assertions to `lib/protocol-lab.test.ts` (structural/determinism) and
+   extend `lib/referential-integrity.test.ts` if the lab links to Learn,
+   Errors, KIPs, Simulate scenarios, or Runbooks.
+6. Run `pnpm build` — the lab appears at `/protocol` and gets a static route,
+   sitemap entry, and search index entry automatically.
+
+Every lab must display the exact text `Reviewed against Apache Kafka 4.3.1`
+(via the `REVIEWED_AGAINST_TEXT` constant) and must not make any live broker
+or network calls.
 
 ## How to add a Workbench tool
 
@@ -203,7 +268,8 @@ Test composition and behavior in `detect.test.ts` and `analyze.test.ts`.
   thresholds are enforced in `scripts/test-coverage.mjs`:
   - Root / diagnose / sim / CLI: ≥85% lines, ≥70% branches, ≥85% functions
   - Incident / planners: ≥90% lines, ≥80% branches, ≥90% functions
-- **Browser tests** use Playwright (Chromium only, 25 tests). Run with
+- **Browser tests** use Playwright (Chromium only, 57 tests; last verified
+  2026-07-26). Run with
   `pnpm test:browser` after installing:
   `corepack pnpm exec playwright install chromium`.
 

@@ -8,6 +8,43 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Production deployment and security foundation:
+  - standalone Next.js output, a multi-stage non-root Node 22 Alpine image, a
+    Node/fetch container health check, and Vercel/Docker operations guidance
+  - dynamic `GET`/`HEAD /api/health` with no-store responses, package/commit
+    metadata, and explicit optional-LLM configuration state
+  - dependency-free production environment validation, Dependabot, weekly
+    CodeQL, immutable GitHub Action pins, and a standalone CI health smoke
+  - private vulnerability reporting policy and an original project conduct
+    policy
+- **Second content wave**:
+  - **Field Notes** (`/notes`): a typed Fumadocs collection with a distinct
+    editorial/engineering-log treatment, four dated Kafka 4.3.1-reviewed
+    notes/experiments, static homepage integration, unified search/sitemap
+    coverage, and a separate `/notes/rss.xml` feed.
+  - Five Kafka-for-AI Learn articles and deterministic local interactive labs:
+    share-group worker leases, external side-effect replay boundaries, RAG
+    freshness/versioning, Kafka/MCP/A2A protocol composition, and model-canary
+    replay gates. Learn tracks are metadata-driven for Foundations and Kafka
+    for AI Engineers.
+  - Six Kafka 4.3.1 evidence-first runbooks: under-replicated/offline
+    partitions, disk/log-dir failures, rebalance storms, stuck reassignment,
+    TLS/SASL/ACL failures, and MirrorMaker lag/divergence.
+  - Three deterministic simulator scenarios: hot partition, eager rebalance
+    storm, and RF=2 offline partition/recovery; behavioral tests cover skew,
+    accumulated pause/duplicate risk/lag, and ISR restoration.
+  - KIP-877 (plugin/connector metrics) and KIP-1066 (broker/log-directory
+    cordoning) added to the KIP index; local MDX link integrity now covers
+    Learn, Runbooks, and Field Notes.
+- **Protocol Lab** surface (`/protocol`) with 5 curated, deterministic Kafka wire-protocol walkthroughs, each reviewed against Apache Kafka 4.3.1:
+  - Produce Record — ApiVersions -> Metadata -> Produce; acks 0/1/all, idempotent producer, injected leader move with NOT_LEADER_OR_FOLLOWER recovery.
+  - Consumer Group — classic FindCoordinator -> JoinGroup -> SyncGroup -> Heartbeat (eager and cooperative-sticky) vs. KIP-848 ConsumerGroupHeartbeat, each through a scale-out and a crash/restart.
+  - Share Groups (KIP-932) — ShareGroupHeartbeat -> ShareFetch -> ShareAcknowledge; accept/release/reject, lock expiry, redelivery, delivery-count-based poison handling; AI-agent worker pool example.
+  - Transactions — InitProducerId, transactional produce, offset participation, EndTxn, commit/abort control markers, producer fencing after an epoch bump, and an external LLM/tool side-effect caveat.
+  - Replication & Failover — follower Fetch, LEO/HW, ISR, leader epoch, clean vs. unclean leader election, and OffsetForLeaderEpoch-based stale-replica truncation.
+  - Shared, reusable `ProtocolLabPlayer` client component: Sequence (actor lanes) and Wire (decoded request/response frames, correlation IDs, framed hex) modes, scenario/variant switching, prev/next/play/pause/reset, keyboard shortcuts, reduced-motion support.
+  - Typed data model (`lib/protocol-lab`) for actors, steps, wire frames/fields, state snapshots, annotations, and variants; pure deterministic lab builders with no client-side randomness.
+  - KIP-932 ("Queues for Kafka") added to the KIP index.
 - **Workbench** surface (`/workbench`) with 7 interactive triage/analysis tools:
   - Incident Triage — 10 Kafka failure signature matchers, confidence scoring, observability recs.
   - Consumer Lag Triage — lag classification, partition skew, drain ETA, capacity planning.
@@ -21,14 +58,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Three-axis consumer group model in `@kafka-hub/kafka-sim`: `groupProtocol`, `classicAssignmentBehavior`, and explicit `assignor` (classic: range/roundrobin/sticky/cooperative-sticky compatibility; consumer protocol: uniform). One-tick pending reconciliation. Deterministic consumer operations (join, leave, crash, restart, scale-out, rolling restart), structured `RebalanceEvent` tracking.
 - Three rebalance scenarios: `rebalance-eager-classic`, `rebalance-cooperative-classic`, `rebalance-consumer-protocol`.
 - `/simulate?scenario=...` deep-link support with URL-parameter synchronization.
-- `/learn/glossary`, `/runbooks` (4 playbooks), `/errors` (20 exceptions, static route), `/kips` (25 KIPs, static route).
+- `/learn/glossary`, `/runbooks` (4 playbooks), `/errors` (20 exceptions, static route), `/kips` (26 KIPs, static route).
 - 3 additional Learn articles (embedding backpressure, agent traces, glossary).
 - Full-content search (`Cmd/Ctrl+K`) indexing article and runbook body text; dark mode toggle; learning track navigation.
 - Fix Composer in Diagnose: merge structured fixes, lossless round-trip patches, corrected-properties download.
 - Diagnose exports: JSON (redacted) and corrected `.properties` file. Workbench exports: Markdown and JSON.
 - Diagnose rule category split into separate files (broker, topic, producer, consumer, security, transactions, performance).
 - Workbench shared UI primitives: labeled fields, validation summary, result cards, export actions (Markdown/JSON copy and download).
-- Playwright browser smoke tests (25 tests, Chromium): simulate deep links, search, mobile nav at 320/375/414 viewports, accessibility, diagnose, all 7 workbench tools.
+- Playwright browser smoke tests (57 tests, Chromium): simulate deep links,
+  search, mobile nav at 320/375/414 viewports, accessibility, diagnose, all 7
+  Workbench tools, all 5 Protocol Lab surfaces, Field Notes, content-wave
+  Learn labs, new scenarios, and new runbooks.
 - Per-domain native coverage thresholds via `scripts/test-coverage.mjs` (Node 22 `--experimental-test-coverage`).
 - CI updated: pnpm 11.17.0, Node 22, frozen install, typecheck, lint, unit tests, coverage, production build, Playwright, audit, CLI smoke.
 - Optional Plausible analytics behind `NEXT_PUBLIC_PLAUSIBLE_DOMAIN`.
@@ -39,6 +79,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- Added a static-compatible production CSP and common security headers.
+  Normal routes deny framing; `/simulate/embed/*` remains intentionally
+  cross-origin embeddable without an effective X-Frame-Options restriction.
+- Hardened the optional Anthropic route with content-type enforcement,
+  streaming body limits, explicit model selection, request IDs, no-store
+  responses, provider/route/browser timeouts, cancellation, strict output
+  parsing, bounded cache/limiter state, and trusted-proxy validation.
+- Canonical origins now reject credentials, non-root paths, queries, and
+  fragments instead of silently normalizing them.
+- Removed noindex simulator embed pages from the sitemap.
 - Diagnose rules split from monolithic `rules.ts` into per-category files with canonical metadata in `rule-metadata.ts`.
 - Coverage script uses `**/*.test.ts` globs for reliable expansion and reports per-suite pass/fail.
 - CI workflow uses pnpm 11.17.0 (matching `packageManager` field), adds coverage and browser gates.

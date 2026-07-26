@@ -1,0 +1,150 @@
+---
+title: "Kafka 4.3: an operator's change log, not a feature parade"
+description: "What cordoning, share-group controls, tiered follower fetches, coordinator limits, and storage metrics change in an operating playbook."
+date: "2026-07-26"
+kind: "field-note"
+tags: ["kafka-4.3.1", "operations", "storage", "share-groups"]
+reviewedAgainst: "Reviewed against Apache Kafka 4.3.1"
+featured: true
+---
+
+Kafka 4.3.0 shipped 25 KIPs and more than 600 commits. That is a release-note
+fact, not an instruction to turn every new setting on. This field note narrows
+the release to changes that alter an operator's evidence, maintenance sequence,
+or rollback decision.
+
+**Status and scope.** The feature references below come from the
+[Kafka 4.3.0 announcement](https://kafka.apache.org/blog/2026/05/22/apache-kafka-4.3.0-release-announcement/)
+and [4.3.0 release notes](https://archive.apache.org/dist/kafka/4.3.0/RELEASE_NOTES.html).
+The operational wording was reviewed against the Kafka 4.3.1 baseline on
+2026-07-26. Treat an upgrade guide and the exact broker/client patch version as
+the final authority for a production change.
+
+## 01 — Cordoning is placement control, not evacuation
+
+[KIP-1066](https://cwiki.apache.org/confluence/spaces/KAFKA/pages/311627566/KIP-1066+Mechanism+to+cordon+brokers+and+log+directories)
+(`KAFKA-19774`) adds a mechanism to cordon brokers and individual log
+directories. A cordoned directory still serves its existing replicas, but new
+partitions are not allocated to it. Cordoning every directory on a broker makes
+that broker ineligible for new replica placement.
+
+That makes it useful before a disk replacement, a broker scale-down, or a
+capacity expansion where new partitions should prefer fresh storage. It does
+**not** move replicas, drain bytes, repair an offline directory, or prove that
+the cluster has enough uncordoned capacity for the desired replication factor.
+
+The safe maintenance sequence is deliberately boring:
+
+1. Record current leaders, ISR, usable bytes, and the replicas that must move.
+2. Verify the metadata-version prerequisite and cordon the intended
+   `cordoned.log.dirs` scope.
+3. Confirm the cordon with `DescribeLogDirs`/`kafka-log-dirs.sh` evidence and
+   the new cordon metrics, then run a bounded reassignment plan.
+4. Wait for ISR and disk headroom to stabilize before retiring hardware.
+5. Stop if the plan would leave an under-replicated partition with no safe
+   source or would require unclean recovery to preserve availability.
+
+The KIP documents `LogDirectoryCordoned` and
+`CordonedLogDirectoryCount` metrics. Add them to the same dashboard as
+filesystem utilization and offline-directory errors; a green cordon metric is
+not evidence that a disk evacuation has finished.
+
+**Runbook implication:** add cordoning as prevention to
+[disk-full-or-log-dir-offline](/runbooks/disk-full-or-log-dir-offline), not as
+its repair step. An offline log directory needs filesystem and replica evidence
+first.
+
+## 02 — Share-group controls are production knobs, not a queue migration plan
+
+`KAFKA-20037` adds group configurations for share groups. Share groups are
+Kafka's cooperative, per-record consumption model: records are acquired under
+a time-limited lock and are acknowledged, released, rejected, or redelivered
+after expiry. The 4.3 change adds control surface around that model; it does
+not make every consumer workload a share-group workload.
+
+Before changing controls, characterize the work:
+
+- **Lock duration** must cover normal processing plus a bounded retry window,
+  not a worst-case indefinite external dependency.
+- **Concurrent acquired records** need a ceiling per partition so a slow worker
+  cannot turn in-flight work into invisible lag.
+- **Delivery counts** need an explicit poison-record threshold and an audited
+  reject/dead-letter policy.
+- **Effects** need an idempotency key or durable result lookup. A record may be
+  delivered again after a crash or lock expiry.
+
+Use the [Share Groups Protocol Lab](/protocol/share-groups) to inspect the
+heartbeat, fetch, acknowledgement, release, reject, and expiry sequence. The
+[share-groups agent workers experiment](/notes/share-groups-agent-workers-experiment)
+shows why a lock is not an external-effect transaction.
+
+## 03 — Tiered followers change recovery paths, not the need to measure them
+
+`KAFKA-15433` enables follower fetch from a tiered offset. For a cluster using
+tiered storage, that matters when a follower needs data that is no longer in
+the leader's local hot set. It can reduce a recovery bottleneck in the right
+topology, but it does not erase remote-store latency, egress limits, remote
+index cache behavior, or the need to validate the feature in the deployed
+configuration.
+
+For a broker replacement experiment, record:
+
+- time from replica creation to ISR admission;
+- local and remote fetch/request metrics, cache behavior, and remote-store
+  errors;
+- leader disk/network saturation and client produce latency;
+- the exact amount of historical data the follower must recover.
+
+Compare a controlled run with and without the tiered path where your deployment
+supports both. Do not infer recovery time from one healthy partition or from
+the fact that remote segments are visible.
+
+## 04 — Coordinator and storage limits deserve an admission-control review
+
+The release notes list `KAFKA-19519`, a new configuration for the group
+coordinator maximum record size. Its operational value is a bound: group
+metadata records and coordinator buffers still have finite room. Enlarging a
+record limit without measuring request size, heap pressure, coordinator latency,
+and the reason metadata grew merely moves the failure boundary.
+
+The same release notes include `KAFKA-20157`, **Partition Size Percentage
+Metrics for Storage Monitoring**. Pair percentage-of-capacity visibility with
+absolute bytes, filesystem free space, replication traffic, and a projected
+retention horizon. Percentages make uneven disks and hot partitions easier to
+spot; they do not tell you whether reclaimable segments are actually eligible
+for deletion.
+
+The operator question becomes: _which admission limit is protecting a recovery
+path?_ A coordinator record cap protects coordinator resources; a partition
+size percentage warns about placement/storage concentration; a cordon prevents
+new allocation. None of them are an evacuation workflow by themselves.
+
+## 05 — Deprecations: inventory first, then remove
+
+The 4.3 notes deprecate the broker-level
+`group.coordinator.rebalance.protocols` configuration (`KAFKA-19740`) and list
+API and dynamic-config cleanup work. Deprecation is a migration signal, not a
+permission to delete a setting during an incident.
+
+Use a dry inventory:
+
+1. Export effective broker and client configs with secrets redacted.
+2. Identify who depends on the old behavior and which client versions are
+   still in rotation.
+3. Exercise rolling restart and scale-out in a non-production cluster.
+4. Change one compatibility boundary at a time and retain a known-good config
+   snapshot for rollback.
+
+## Evidence links and next experiments
+
+- [Kafka 4.3.0 release announcement](https://kafka.apache.org/blog/2026/05/22/apache-kafka-4.3.0-release-announcement/)
+- [Kafka 4.3.0 release notes](https://archive.apache.org/dist/kafka/4.3.0/RELEASE_NOTES.html)
+- [KIP-1066: cordon brokers and log directories](https://cwiki.apache.org/confluence/spaces/KAFKA/pages/311627566/KIP-1066+Mechanism+to+cordon+brokers+and+log+directories)
+- [KIP-1066 in the local index](/kips#kip-1066)
+- [Under-replicated or offline partitions runbook](/runbooks/under-replicated-or-offline-partitions)
+- [Offline partition simulator](/simulate?scenario=offline-partition)
+
+The pragmatic experiment is a planned evacuation: cordon one non-critical
+directory, reassign a bounded replica set, inject one follower delay, then
+write down the actual ISR, storage, and client-latency thresholds that made you
+continue or stop.

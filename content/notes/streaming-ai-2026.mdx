@@ -1,0 +1,122 @@
+---
+title: "Streaming AI in 2026: separate the durable parts from the demo parts"
+description: "A field map for Kafka, Flink 2.2, Flink Agents 0.2, and observable AI work without turning protocols into marketing metaphors."
+date: "2026-07-26"
+kind: "field-note"
+tags: ["ai", "flink-2.2", "flink-agents", "observability", "rag"]
+reviewedAgainst: "Kafka 4.3.1; Flink 2.2; Flink Agents 0.2 preview"
+featured: true
+---
+
+The useful version of “streaming AI” is not an autonomous swarm diagram. It is
+a pipeline whose inputs, retries, model calls, retrieval results, costs, and
+side-effect outcomes can be inspected and replayed with explicit boundaries.
+
+This note separates three layers that are often presented as interchangeable.
+
+| Layer | What it is good at | What it is not |
+| --- | --- | --- |
+| Kafka | Durable ordered events, retention, replay, and independent consumer fan-out | A model runtime, tool registry, or cross-agent task protocol |
+| Flink 2.2 | Stateful stream/table processing, including Flink-side AI functions | Kafka functionality renamed as SQL |
+| MCP / A2A | Context/tool exchange or agent-to-agent interoperability | A durable event log or a Kafka replacement |
+
+## What is real in Flink 2.2
+
+The [Flink 2.2 announcement](https://flink.apache.org/2025/12/04/apache-flink-2.2.0-advancing-real-time-data--ai-and-empowering-stream-processing-for-the-ai-era/)
+documents `ML_PREDICT` and `VECTOR_SEARCH` as **Flink** capabilities:
+
+- `ML_PREDICT` supports model inference from Flink SQL/Table API flows.
+- `VECTOR_SEARCH` supports streaming vector similarity queries and context
+  retrieval in Flink.
+
+Kafka can transport document changes, feature updates, prompts, and result
+events into or out of a Flink job. It does not implement either function.
+That distinction matters when assigning ownership, setting a reliability
+expectation, and debugging a stale result: inspect the Flink job, state, sink,
+model endpoint, and index—not a Kafka topic alone.
+
+For retrieval systems, begin with the
+[RAG freshness lab](/learn/streaming-rag-freshness): source version, indexed
+version, tombstone handling, embedding latency, and a bounded stale window are
+more useful SLOs than “real time.”
+
+## Flink Agents 0.2: promising, explicitly preview
+
+[Flink Agents 0.2](https://flink.apache.org/2026/02/06/apache-flink-agents-0.2.0-release-announcement/)
+is a preview release. Its APIs and configuration are experimental and may
+change incompatibly. It adds Java parity for several integrations, a memory
+overhaul, and finer-grained durable execution blocks.
+
+That is worth evaluating in a sandbox. It is **not** a license to claim that
+arbitrary external effects happen exactly once. An HTTP API, email provider,
+payment system, or model endpoint has its own failure and idempotency semantics.
+At the boundary, a process can crash after the remote system accepts a request
+but before local durable state records the result.
+
+The production design remains recognizable:
+
+```text
+input event
+  → durable intent / idempotency key
+  → observable model or tool call
+  → durable result/outbox record
+  → independently retryable effect delivery
+```
+
+Use a provider-supported idempotency key where available. Otherwise persist an
+effect ledger and tolerate reconciliation. The
+[side-effects replay lab](/learn/ai-side-effects-exactly-once) makes the crash
+boundaries concrete.
+
+## Protocols: compose, do not substitute
+
+[MCP](https://modelcontextprotocol.io/docs/learn/architecture) is a JSON-RPC
+client/server protocol for lifecycle/capability negotiation and tools,
+resources, prompts, notifications, and context exchange. It is appropriate
+when an AI host needs to discover and call a tool or read a resource. It is not
+a durable log or an operational control plane.
+
+[A2A 1.0](https://a2a-protocol.org/latest/specification/) standardizes agent
+discovery, messages, tasks, artifacts, streaming updates, and task lifecycle
+interoperability. It is appropriate when separately built agents need to
+negotiate work without sharing their internal state. It is not Kafka.
+
+A practical composition can look like:
+
+```text
+Kafka event → Flink enrichment / routing → agent service
+                                         ↘ MCP tool call
+agent ↔ A2A remote-agent task
+agent outcomes / audit events → Kafka → evaluation and reporting consumers
+```
+
+Each arrow needs its own timeout, authorization, result schema, and replay
+rule. The [MCP/A2A decision lab](/learn/kafka-mcp-a2a) asks the capability
+questions without pretending one protocol owns all of them.
+
+## Observability that helps without collecting private reasoning
+
+The OpenTelemetry GenAI conventions now live in the dedicated
+[semantic-conventions-genai repository](https://github.com/open-telemetry/semantic-conventions-genai).
+Record observable facts that an operator can act on:
+
+- request, model, provider, route, status, latency, tokens, and cost;
+- retrieval query/reference IDs, corpus/index version, hit count, and freshness;
+- tool name, authorization outcome, retry count, idempotency key hash, and
+  result reference;
+- guardrail decision, evaluator version/verdict, and human-review reference.
+
+Do **not** ship hidden chain-of-thought or unbounded prompt/tool payloads to a
+trace topic. Redact inputs and outputs at collection, store large payloads as
+access-controlled references when necessary, define retention by purpose, and
+make correlation IDs explicit.
+
+## The unglamorous acceptance test
+
+Before adopting an AI streaming component, kill a worker between every durable
+step. Rotate the embedding model. Send a tombstone. Delay the vector sink.
+Replay a day of events to an isolated index. Inspect cost, latency, source
+version, retrieval reference, tool result, and guardrail/evaluation outcome.
+
+If those operations are not explainable, the architecture is not yet a
+streaming system—it is a successful demo waiting for its first retry.

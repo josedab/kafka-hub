@@ -1,0 +1,123 @@
+---
+title: "Share groups for agent workers: locks help scheduling, not effects"
+description: "An experiment log for KIP-932 worker pools with leases, redelivery, poison work, and idempotent external actions."
+date: "2026-07-26"
+kind: "experiment"
+tags: ["share-groups", "kip-932", "agent-workers", "idempotency"]
+reviewedAgainst: "Reviewed against Apache Kafka 4.3.1"
+featured: false
+---
+
+[KIP-932](https://cwiki.apache.org/confluence/spaces/KAFKA/pages/255070434/KIP-932+Queues+for+Kafka)
+introduces share groups: cooperative consumption for work that needs
+per-record acknowledgement rather than exclusive partition ownership. Members
+can outnumber partitions. A fetched record is acquired under a time-limited
+lock; the consumer can acknowledge it, release it, reject it, or do nothing
+until the lock expires and the record becomes available again.
+
+That is a useful scheduling primitive for a fleet of agent workers. It is not a
+transaction manager for an arbitrary model, browser, ticketing, or payment
+effect.
+
+**Status.** KIP-932 is Accepted. This experiment describes the semantics in
+the KIP and a Kafka 4.3.1-reviewed baseline; validate the exact broker and
+client feature/configuration support before deploying it. KIP text is a design
+source, not a replacement for the versioned product documentation.
+
+## The workload
+
+Use a small topic (four partitions) and a larger worker pool (eight workers).
+Each record represents a bounded task:
+
+```json
+{
+  "work_id": "case-9284",
+  "tenant_id": "north",
+  "effect_key": "case-9284:triage:v3",
+  "input_ref": "object://restricted/case-9284.json"
+}
+```
+
+The key preserves any ordering you truly need. The record carries an
+`effect_key` because the share lock only protects acquisition. It cannot prove
+that a worker did not complete a remote call just before it lost its process.
+
+Run the same records through the
+[Share Groups Protocol Lab](/protocol/share-groups) and the
+[Share group worker pool](/learn/share-groups).
+
+## The four terminal-looking actions are not equivalent
+
+| Worker action | Kafka scheduling result | Effect design question |
+| --- | --- | --- |
+| `acknowledge` | The record is accepted as completed | Did the durable outcome say the effect was already done? |
+| `release` | The record becomes eligible for another delivery | Is the error transient and is retry budget still available? |
+| `reject` | The record is marked unprocessable, not retried | Where is the auditable reason and operator workflow? |
+| Let lock expire | Another delivery can occur after the lease | Was the worker dead, slow, partitioned, or merely waiting on a provider? |
+
+KIP-932 specifies a default 30-second acquisition lock and a
+`share.record.lock.duration.ms` group configuration. Pick a lock duration from
+measured normal and p99 processing—not from a wish that external services will
+be stable. A long lock makes work invisible longer after a worker fails; a
+short lock causes simultaneous-looking duplicate attempts when a slow call
+finishes after redelivery.
+
+## Failure injection: crash at the only boundary that matters
+
+For each task, run these deliberate stops:
+
+1. Before invoking the model/tool.
+2. After the remote system accepted the effect but before durable result write.
+3. After durable result write but before Kafka acknowledgement.
+4. During a provider timeout.
+5. After the lock expires but before the original worker wakes up.
+
+Only a result ledger or provider idempotency contract can distinguish “call it”
+from “return the recorded result.” A good worker flow is:
+
+```text
+acquire record
+  → read effect_key result ledger
+  → if terminal: acknowledge without repeating effect
+  → write durable intent / attempt
+  → invoke provider with effect_key where supported
+  → write durable terminal result
+  → acknowledge
+```
+
+This is an at-least-once delivery design with a deduplicated effect outcome.
+Kafka EOS can atomically coordinate Kafka reads/writes and offsets inside its
+scope; it does not atomically commit an unrelated remote side effect.
+
+## Delivery count is a policy input, not an automatic dead-letter queue
+
+Share groups count delivery attempts so operators can detect unprocessable
+work. Define a policy before the first poison record:
+
+- A malformed payload is rejected with a reason code and immutable evidence
+  reference.
+- A transient dependency failure is released with bounded backoff outside a
+  busy-loop.
+- A repeated effect-key conflict is parked for reconciliation, not retried
+  until it becomes expensive noise.
+- A human-visible task gets an owner and deadline; “reject” must not become an
+  unobserved graveyard.
+
+Monitor acquired/available work, lock expiries, releases, rejects, delivery
+count distribution, per-worker latency, and the gap between durable results
+and acknowledgements. These tell different stories.
+
+## What this experiment can conclude
+
+It can establish whether more workers than partitions improve independent-work
+throughput, whether lock settings match observed latency, and whether a poison
+record policy is reviewable. It cannot establish exactly-once external effects
+unless the external system participates through an idempotency/result contract.
+
+## Related
+
+- [KIP-932 in the KIP index](/kips#kip-932)
+- [Share Groups Protocol Lab](/protocol/share-groups)
+- [Kafka for AI engineers](/learn/kafka-for-ai)
+- [AI side effects and exactly-once boundaries](/learn/ai-side-effects-exactly-once)
+- [Streaming agent observability note](/notes/streaming-ai-2026)

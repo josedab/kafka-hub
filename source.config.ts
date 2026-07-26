@@ -22,4 +22,17 @@ export const runbooks = defineDocs({
   },
 });
 
+export const notes = defineDocs({
+  dir: "content/notes",
+  docs: {
+    schema: frontmatterSchema.extend({
+      date: z.string(),
+      tags: z.array(z.string()),
+      kind: z.enum(["field-note", "experiment"]),
+      reviewedAgainst: z.string().optional(),
+      featured: z.boolean().optional(),
+    }),
+  },
+});
+
 export default defineConfig();

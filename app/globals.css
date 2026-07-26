@@ -29,6 +29,223 @@
 }
 
 @layer components {
+  /*
+   * Field Notes use an incident-log/editorial treatment rather than the
+   * product-card language used elsewhere: a numbered margin, ruled entries,
+   * and a restrained amber filing mark make their dated, provisional nature
+   * obvious without introducing a separate visual system.
+   */
+  .field-notes-masthead {
+    position: relative;
+    border-left: 3px solid color-mix(in oklab, #b45309 82%, var(--color-fd-border));
+    padding: 1.15rem 1.25rem 1.35rem;
+    background:
+      linear-gradient(
+        90deg,
+        color-mix(in oklab, #f59e0b 10%, transparent),
+        transparent 72%
+      ),
+      repeating-linear-gradient(
+        0deg,
+        transparent 0,
+        transparent 31px,
+        color-mix(in oklab, var(--color-fd-border) 55%, transparent) 32px
+      );
+  }
+
+  .field-notes-kicker {
+    color: color-mix(in oklab, #b45309 82%, var(--color-fd-foreground));
+    font-family: var(--font-mono);
+    font-size: 0.6875rem;
+    font-weight: 700;
+    letter-spacing: 0.13em;
+    line-height: 1.4;
+    text-transform: uppercase;
+  }
+
+  .field-notes-rule {
+    height: 1px;
+    width: 100%;
+    background:
+      repeating-linear-gradient(
+        90deg,
+        color-mix(in oklab, #b45309 72%, var(--color-fd-border)) 0 7px,
+        transparent 7px 12px
+      );
+  }
+
+  .field-notes-index {
+    border-top: 1px solid var(--color-fd-border);
+    list-style: none;
+    margin-left: 0;
+    padding-left: 0;
+  }
+
+  .field-notes-entry {
+    display: grid;
+    grid-template-columns: minmax(5.25rem, 0.28fr) minmax(0, 1fr);
+    border-bottom: 1px solid var(--color-fd-border);
+  }
+
+  .field-notes-entry-meta {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    padding: 1.35rem 1rem 1rem 0;
+    color: var(--color-fd-muted-foreground);
+    font-family: var(--font-mono);
+    font-size: 0.6875rem;
+    line-height: 1.25;
+  }
+
+  .field-notes-entry-meta time {
+    max-width: 5rem;
+  }
+
+  .field-notes-entry-link {
+    position: relative;
+    display: block;
+    overflow: hidden;
+    min-width: 0;
+    padding: 1.25rem 0 1.4rem 1.25rem;
+    transition: background-color 160ms ease, padding-left 160ms ease;
+  }
+
+  .field-notes-entry-link::before {
+    position: absolute;
+    inset: 0 auto 0 0;
+    width: 2px;
+    background: #d97706;
+    content: "";
+    opacity: 0;
+    transition: opacity 160ms ease;
+  }
+
+  .field-notes-entry-link:hover,
+  .field-notes-entry-link:focus-visible {
+    background: color-mix(in oklab, #f59e0b 9%, transparent);
+    padding-left: 1.5rem;
+    outline: none;
+  }
+
+  .field-notes-entry-link:focus-visible {
+    box-shadow: inset 0 0 0 2px var(--color-fd-ring);
+  }
+
+  .field-notes-entry-link:hover::before,
+  .field-notes-entry-link:focus-visible::before {
+    opacity: 1;
+  }
+
+  .field-notes-entry-link h2 {
+    margin-top: 0.65rem;
+    font-family: ui-serif, Georgia, Cambria, "Times New Roman", serif;
+    font-size: clamp(1.3rem, 2vw, 1.7rem);
+    font-weight: 650;
+    letter-spacing: -0.025em;
+    line-height: 1.14;
+  }
+
+  .field-notes-entry-link p {
+    margin-top: 0.6rem;
+    max-width: 44rem;
+    color: var(--color-fd-muted-foreground);
+    font-size: 0.925rem;
+    line-height: 1.55;
+  }
+
+  .field-notes-kind,
+  .field-notes-featured,
+  .field-notes-review,
+  .field-notes-tags span {
+    border: 1px solid color-mix(in oklab, var(--color-fd-border) 88%, #b45309);
+    color: var(--color-fd-muted-foreground);
+    font-family: var(--font-mono);
+    font-size: 0.625rem;
+    font-weight: 700;
+    letter-spacing: 0.09em;
+    line-height: 1;
+    padding: 0.35rem 0.45rem;
+    text-transform: uppercase;
+  }
+
+  .field-notes-kind {
+    border-color: color-mix(in oklab, #b45309 62%, var(--color-fd-border));
+    color: color-mix(in oklab, #b45309 80%, var(--color-fd-foreground));
+  }
+
+  .field-notes-featured {
+    background: #b45309;
+    border-color: #b45309;
+    color: #fff;
+  }
+
+  .field-notes-review {
+    letter-spacing: 0.03em;
+    text-transform: none;
+  }
+
+  .field-notes-tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+    margin-top: 1rem;
+  }
+
+  .field-notes-tags span {
+    border-color: transparent;
+    padding-left: 0;
+    padding-right: 0.15rem;
+  }
+
+  .field-notes-footer-mark {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    gap: 1rem;
+    margin-top: 1.5rem;
+    color: var(--color-fd-muted-foreground);
+    font-family: var(--font-mono);
+    font-size: 0.6875rem;
+    letter-spacing: 0.1em;
+  }
+
+  .field-notes-footer-mark a {
+    color: var(--color-fd-foreground);
+    font-weight: 700;
+    letter-spacing: normal;
+  }
+
+  .field-notes-article-header {
+    border-left: 2px solid #d97706;
+    margin-bottom: 1.5rem;
+    padding-left: 1rem;
+  }
+
+  .field-notes-article-footer {
+    margin-top: 3rem;
+  }
+
+  @media (max-width: 640px) {
+    .field-notes-entry {
+      display: block;
+    }
+
+    .field-notes-entry-meta {
+      align-items: center;
+      flex-direction: row;
+      padding: 1rem 0 0;
+    }
+
+    .field-notes-entry-meta time {
+      max-width: none;
+    }
+
+    .field-notes-entry-link {
+      padding: 0.7rem 0 1.2rem 1rem;
+    }
+  }
+
   .glossary-term-card {
     display: none;
   }

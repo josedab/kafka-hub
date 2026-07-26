@@ -18,12 +18,14 @@ export interface NavLink {
 
 /**
  * All top-level navigation links in display order.
- * Includes all seven surfaces for nav parity.
+ * Includes all top-level surfaces for nav parity.
  */
 export const NAV_LINKS: readonly NavLink[] = [
   { text: "Learn", url: "/learn", active: "nested-url" },
+  { text: "Field Notes", url: "/notes", active: "nested-url" },
   { text: "Diagnose", url: "/diagnose" },
   { text: "Simulate", url: "/simulate" },
+  { text: "Protocol", url: "/protocol", active: "nested-url" },
   { text: "Runbooks", url: "/runbooks", active: "nested-url" },
   { text: "Errors", url: "/errors", active: "nested-url" },
   { text: "KIPs", url: "/kips" },

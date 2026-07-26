@@ -4,9 +4,9 @@ export const site = {
   name: "Kafka Engineering Hub",
   shortName: "Kafka Hub",
   tagline:
-    "Interactive learning, diagnostics, runbooks, references, and an in-browser simulator for Kafka engineers.",
+    "Interactive learning, field notes, diagnostics, runbooks, references, and an in-browser simulator for Kafka engineers.",
   description:
-    "Open-source resource for engineers working with Apache Kafka. Interactive articles on internals, a configuration diagnostic engine, incident runbooks, reference catalogs, and a deterministic in-browser broker simulator.",
+    "Open-source resource for engineers working with Apache Kafka. Interactive articles, release-aware field notes, a configuration diagnostic engine, incident runbooks, reference catalogs, and a deterministic in-browser broker simulator.",
   url: CANONICAL_ORIGIN,
   repo: "https://github.com/josedab/kafka-hub",
   author: "Jose David Baena",
@@ -17,6 +17,13 @@ export const site = {
       blurb:
         "Long-form articles with embedded interactive demos. ISR, rebalances, the controller, exactly-once.",
       href: "/learn",
+    },
+    {
+      slug: "notes",
+      title: "Field Notes",
+      blurb:
+        "Release-aware engineering logs, protocol experiments, and evidence-first observations.",
+      href: "/notes",
     },
     {
       slug: "diagnose",
@@ -31,6 +38,13 @@ export const site = {
       blurb:
         "A deterministic in-browser Kafka. Step time, kill brokers, induce rebalances, watch ISR shrink.",
       href: "/simulate",
+    },
+    {
+      slug: "protocol",
+      title: "Protocol Lab",
+      blurb:
+        "Curated wire-protocol walkthroughs: Produce, consumer groups, share groups, transactions, replication failover. Sequence and Wire modes.",
+      href: "/protocol",
     },
     {
       slug: "runbooks",

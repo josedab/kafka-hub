@@ -1,0 +1,128 @@
+---
+title: "Migration log: classic groups to the consumer protocol"
+description: "A repeatable scale-out, crash, and rolling-restart experiment that distinguishes eager, cooperative, and KIP-848 behavior."
+date: "2026-07-26"
+kind: "experiment"
+tags: ["consumer-groups", "kip-848", "rebalances", "experiments"]
+reviewedAgainst: "Reviewed against Apache Kafka 4.3.1"
+featured: true
+---
+
+This is an experiment record, not a claim that one protocol wins every
+workload. It compares three different things that are often collapsed into
+“cooperative rebalancing”:
+
+| Mode | Assignment authority | What moves on membership change |
+| --- | --- | --- |
+| Classic eager | Client-side group leader and assignor | All ownership is revoked before reassignment |
+| Classic cooperative | Client-side cooperative-sticky assignor | Only partitions that must move are handed off incrementally |
+| Consumer protocol ([KIP-848](https://cwiki.apache.org/confluence/display/KAFKA/KIP-848%3A+The+Next+Generation+of+the+Consumer+Rebalance+Protocol)) | Broker-side coordinator | Members heartbeat subscriptions and reconcile a coordinator target assignment |
+
+The KIP-848 consumer protocol is not “classic cooperative with a new name.”
+Its coordinator, heartbeat, epochs, and assignment path are different. It can
+avoid the classic full-stop shape, but a workload can still pause because
+processing is slow, a member is unhealthy, a deploy changes capacity, or an
+external dependency is saturated.
+
+**Status.** This note is reviewed against Kafka 4.3.1. Keep actual client,
+broker, and server-side assignor support in the deployment matrix; do not
+change `group.protocol` solely because a lab model is smoother.
+
+## Test fixture
+
+Use a topic with twelve partitions, three members, stable keys, and one
+consumer group. Make processing intentionally observable:
+
+- a 250 ms normal handler;
+- a single 8 s slow record per selected partition;
+- idempotent output to a second Kafka topic;
+- a per-record effect key in logs, even when the downstream action is mocked.
+
+Capture before every mutation:
+
+```text
+group state / member count / assignment / group & member epochs
+records-lag-max / per-partition lag / poll-to-process duration
+rebalance count / rebalance duration / revoked partitions / duplicate-risk events
+```
+
+The output topic makes duplicate **Kafka** processing visible. It does not
+prove an arbitrary HTTP or model call happened exactly once.
+
+## Scenario A — scale out from three to five
+
+1. Let all three members reach a stable assignment.
+2. Add two members.
+3. Record the partitions each original member stops processing and the time
+   between its last processed offset and first resumed offset.
+4. Repeat each mode with the same key distribution.
+
+Expected shape, not a benchmark:
+
+- **Classic eager:** every member reaches a revoke/assign boundary; the
+  stop-the-world window is obvious in processing.
+- **Classic cooperative:** partitions that remain with an owner can keep
+  progressing while moved partitions complete a handoff.
+- **Consumer protocol:** coordinator-led target assignment and heartbeat
+  reconciliation replace the classic leader assignment round. Observe epochs
+  and actual partition movement rather than labeling every short pause a
+  “rebalance.”
+
+Try the built-in comparison scenarios:
+[classic eager](/simulate?scenario=rebalance-eager-classic),
+[classic cooperative](/simulate?scenario=rebalance-cooperative-classic), and
+[consumer protocol](/simulate?scenario=rebalance-consumer-protocol).
+
+## Scenario B — crash the busiest member
+
+Choose the member with the largest lag-bearing partition set. Stop it without
+a graceful leave, wait for the configured failure detection path, then restart
+it with the same workload.
+
+Write down two separate risks:
+
+1. **Availability/pause risk:** records wait while ownership converges.
+2. **Duplicate risk:** work completed after a commit boundary or effect result
+   can be replayed.
+
+The protocol changes ownership coordination; it cannot make a side effect
+atomic with an unavailable external system. If the handler calls an LLM,
+payment API, or ticketing system, use an idempotency key and durable outcome
+lookup regardless of protocol.
+
+## Scenario C — rolling restart
+
+Restart one member at a time. Repeat once with static membership configured
+where the client and deployment support it, then once without it. Compare:
+
+- partitions revoked per restart;
+- processing gap by partition;
+- time to fully stable assignment;
+- records replayed after the process crosses its commit/effect boundary.
+
+Do not combine a protocol migration, static membership rollout, new assignor,
+and application deployment in one maintenance window. That produces a result
+that cannot be explained or safely rolled back.
+
+## Reading the result
+
+The decision is not “consumer protocol has fewer rebalances.” A useful result
+sounds like this:
+
+> With our twelve partitions, five members, bounded 250 ms handlers, and a
+> crash of the busiest member, the consumer protocol reduced the observed
+> ownership movement compared with classic eager. Our end-to-end pause remains
+> dominated by a 8 s external call, and replay remains possible after the
+> external effect boundary.
+
+That statement names the tested conditions and leaves room for a different
+result under skew, state restoration, coordinator pressure, or different client
+versions.
+
+## Related
+
+- [Consumer rebalance storm runbook](/runbooks/consumer-rebalance-storm)
+- [Consumer Group Protocol Lab](/protocol/consumer-group)
+- [KIP-848 in the KIP index](/kips#kip-848)
+- [Exactly once semantics](/learn/exactly-once)
+- [AI side effects and the exactly-once boundary](/learn/ai-side-effects-exactly-once)

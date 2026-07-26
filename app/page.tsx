@@ -3,13 +3,15 @@ import { ArrowRight } from "lucide-react";
 import { SiteShell } from "@/components/site-shell";
 import { Badge } from "@/components/ui/badge";
 import { site } from "@/lib/site";
-import { source } from "@/lib/source";
+import { notesSource, source } from "@/lib/source";
 import { surfaceCountLabel, getProjectVersion } from "@/lib/project-stats";
 
 const surfaceAccent: Record<string, string> = {
   learn: "from-emerald-500/15 to-emerald-500/0",
+  notes: "from-amber-500/15 to-amber-500/0",
   diagnose: "from-amber-500/15 to-amber-500/0",
   simulate: "from-sky-500/15 to-sky-500/0",
+  protocol: "from-teal-500/15 to-teal-500/0",
   runbooks: "from-rose-500/15 to-rose-500/0",
   errors: "from-orange-500/15 to-orange-500/0",
   kips: "from-cyan-500/15 to-cyan-500/0",
@@ -17,14 +19,26 @@ const surfaceAccent: Record<string, string> = {
 };
 
 function articleDate(page: { data: { date?: string } }) {
-  return page.data.date ? new Date(page.data.date) : new Date(0);
+  const date = page.data.date ? new Date(page.data.date) : new Date(0);
+  return Number.isNaN(date.getTime()) ? new Date(0) : date;
 }
 
 export default function HomePage() {
-  const articles = source
-    .getPages()
-    .filter((p) => p.slugs.length > 0)
-    .sort((a, b) => articleDate(b).getTime() - articleDate(a).getTime())
+  const articles = [
+    ...source
+      .getPages()
+      .filter((page) => page.slugs.length > 0)
+      .map((page) => ({ page, contentType: "Learn" })),
+    ...notesSource
+      .getPages()
+      .filter((page) => page.slugs.length > 0)
+      .map((page) => ({ page, contentType: "Field Note" })),
+  ]
+    .sort((a, b) => {
+      const dateDifference =
+        articleDate(b.page).getTime() - articleDate(a.page).getTime();
+      return dateDifference || a.page.url.localeCompare(b.page.url);
+    })
     .slice(0, 6);
 
   const version = getProjectVersion();
@@ -111,6 +125,12 @@ export default function HomePage() {
                 All articles →
               </Link>
               <Link
+                href="/notes"
+                className="font-medium text-fd-foreground hover:underline"
+              >
+                Field Notes →
+              </Link>
+              <Link
                 href="/rss.xml"
                 className="font-mono text-fd-muted-foreground hover:text-fd-foreground"
               >
@@ -119,13 +139,14 @@ export default function HomePage() {
             </div>
           </div>
           <ul className="mt-6 grid gap-3 sm:grid-cols-2">
-            {articles.map((page) => {
+            {articles.map(({ page, contentType }) => {
               const date = page.data.date
-                ? new Date(page.data.date).toLocaleDateString("en-US", {
+                ? new Intl.DateTimeFormat("en-US", {
                     year: "numeric",
                     month: "short",
                     day: "numeric",
-                  })
+                    timeZone: "UTC",
+                  }).format(articleDate(page))
                 : null;
               return (
                 <li key={page.url}>
@@ -135,7 +156,7 @@ export default function HomePage() {
                   >
                     <div className="flex items-center justify-between text-[11px] text-fd-muted-foreground">
                       <span className="font-mono uppercase tracking-wider">
-                        learn
+                        {contentType}
                       </span>
                       {date ? <time>{date}</time> : null}
                     </div>

@@ -1,0 +1,131 @@
+---
+title: "Kafka, MCP, and A2A: compose the right boundaries"
+description: "Kafka is durable event transport; MCP is context and tool exchange; A2A is agent task interoperability. Use the capability that matches the boundary."
+date: "2026-07-26"
+tags: ["kafka", "mcp", "a2a", "agents", "architecture"]
+---
+
+These technologies solve adjacent problems. Trouble starts when an architecture
+diagram calls all three “the agent bus” and assumes the semantics transfer.
+
+<AiProtocolDecisionLab />
+
+## The short answer
+
+| Technology | Designed for | Explicitly not a substitute for |
+| --- | --- | --- |
+| **Kafka** | Durable ordered event transport, retention, replay, and independent consumer fan-out | Tool discovery, agent task lifecycle, synchronous RPC semantics |
+| **MCP** | Model Context Protocol client/server context exchange via JSON-RPC: lifecycle, tools, resources, prompts, notifications | A durable event log or control plane |
+| **A2A 1.0** | Agent discovery plus task/message/artifact interoperability across independent agents | Kafka topic retention/replay or MCP tool definitions |
+
+Use a direct authenticated request/response API when a user waits for a bounded
+answer. Add Kafka only when durable buffering, replay, fan-out, or asynchronous
+decoupling is a requirement. Add MCP when an AI host needs to discover/call
+tools or retrieve resources. Add A2A when one agent delegates a task to another
+independent agent that owns its own implementation.
+
+## MCP: a host-to-server context boundary
+
+The [MCP architecture](https://modelcontextprotocol.io/docs/learn/architecture)
+defines a JSON-RPC data layer and transport layer. Hosts create clients for
+servers. Servers expose tools, resources, and prompts; lifecycle and capability
+negotiation make that exchange explicit.
+
+An MCP tool call can trigger an action, but MCP does not make that action
+durable, replayable, or transactionally coordinated with a Kafka offset. If
+the tool invocation represents business work, give it a request ID, a
+permission boundary, timeout/cancellation policy, observable result, and
+idempotency/reconciliation design where needed.
+
+Good fit:
+
+```text
+interactive agent host → MCP client → inventory/search tool server
+```
+
+Not a good fit:
+
+```text
+millions of durable events → MCP calls as a replacement for a partitioned log
+```
+
+## A2A: an agent-to-agent task boundary
+
+The [A2A 1.0 specification](https://a2a-protocol.org/latest/specification/)
+defines Agent Cards, messages, tasks, artifacts, streaming updates, and
+protocol bindings. A remote agent can be opaque: peers exchange declared
+capabilities and task information rather than internal prompts, memory, tools,
+or hidden reasoning.
+
+That fits a cross-team or cross-vendor delegation:
+
+```text
+case-orchestrator agent → A2A task → compliance-review agent → artifact/status
+```
+
+Kafka may record task state transitions or audit events around this interaction,
+but it does not become the A2A task protocol just because it stores an event.
+Likewise, an A2A task does not provide Kafka's partitioned replay/fan-out.
+
+## Kafka: durable facts around the AI boundary
+
+Kafka is strongest where a fact should survive an unavailable consumer and be
+replayed by more than one independently deployed system:
+
+```text
+document.changed
+  ├─ embedding pipeline
+  ├─ access-control materialization
+  ├─ evaluation sample capture
+  └─ audit/archive consumer
+```
+
+Key events by the entity whose order matters. Version schemas. Set retention
+for recovery and privacy needs. Keep large/sensitive inputs in controlled
+storage with references in the event. Use separate consumer groups for
+independent effects.
+
+Kafka is not a tool catalogue. It is not a request router. It does not answer
+whether a remote tool call completed exactly once. Those answers belong to the
+application and protocol boundary around the event.
+
+## A composition example
+
+```text
+Kafka document.changed
+  → stream processor validates revision and emits work intent
+  → agent service reads intent
+       → MCP discovers/calls an approved retrieval tool
+       → A2A delegates a long specialist task when needed
+  → agent service writes durable outcome / audit event to Kafka
+  → evaluator and operations consumers replay independently
+```
+
+Each arrow has a different agreement:
+
+- Kafka: key, schema, ordering scope, retention, replay offset.
+- MCP: server trust, tool/resource capability, JSON-RPC lifecycle, user
+  confirmation, timeout.
+- A2A: Agent Card trust, task state, artifact access, streaming/push behavior,
+  cancellation.
+- External effect: idempotency key, result ledger, retry budget, reconciliation.
+
+If those agreements are written separately, the composition stays debuggable.
+
+## Observability and privacy
+
+Link work with correlation IDs and references across boundaries. Record tool
+name, agent/task ID, Kafka position, result reference, latency, cost, retries,
+guardrail verdict, evaluation version, and authorization outcome. Avoid raw
+chain-of-thought and unbounded prompt/tool payloads in logs or Kafka topics.
+
+The dedicated [OpenTelemetry GenAI semantic conventions
+repository](https://github.com/open-telemetry/semantic-conventions-genai)
+is the current reference for GenAI spans, metrics, events, MCP, and provider
+conventions.
+
+## Related
+
+- [Streaming AI in 2026 field note](/notes/streaming-ai-2026)
+- [AI side effects and exactly-once](/learn/ai-side-effects-exactly-once)
+- [Agent traces as Kafka topics](/learn/agent-traces)

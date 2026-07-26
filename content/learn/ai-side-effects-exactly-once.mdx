@@ -1,0 +1,142 @@
+---
+title: "AI side effects: where Kafka exactly-once semantics stop"
+description: "A replay-safe design for model and tool calls using inboxes, outboxes, durable results, idempotency keys, and explicit reconciliation."
+date: "2026-07-26"
+tags: ["exactly-once", "ai", "idempotency", "replay", "outbox"]
+---
+
+Kafka transactions can atomically coordinate Kafka reads, Kafka writes, and
+consumer offsets within Kafka's transaction boundary. That is valuable. It is
+not an atomic commit protocol for a model endpoint, an email provider, a
+browser action, a payment API, or any other independently operated system.
+
+The hard failure is small:
+
+```text
+Kafka record delivered
+  → external model/tool accepts an effect
+  → process crashes
+  → durable result and Kafka offset are not yet committed
+```
+
+On restart, Kafka correctly redelivers the input. The application now needs to
+answer a question Kafka cannot answer by itself: _did the external system
+already do the business operation?_
+
+<SideEffectReplayLab />
+
+## Name the boundary before choosing a guarantee
+
+There are three different claims that teams commonly call “exactly once”:
+
+1. **Exactly-once Kafka records and offsets.** A transactional topology can
+   avoid duplicate downstream Kafka records for a processed input.
+2. **At-least-once external requests with idempotent effect outcomes.** The
+   application may retry a request, while a provider or ledger makes the
+   business operation converge to one outcome.
+3. **Exactly-once external execution.** This requires a participating external
+   transactional/idempotency contract; it cannot be inferred from Kafka EOS.
+
+Write down which one the system has. A request to an LLM may be harmless to
+repeat in one workflow but expensive, nondeterministic, or policy-significant
+in another. A tool call can send an email, mutate a ticket, or trigger a
+payment. Treat them differently.
+
+## A replay-safe skeleton
+
+The following components separate intent, execution, and delivery:
+
+| Component | Responsibility | Recovery question |
+| --- | --- | --- |
+| **Inbox** | Deduplicate accepted input/event IDs before work begins | Have we already accepted this event revision? |
+| **Intent / outbox** | Persist the requested business operation and effect key | What should happen, even if the worker dies? |
+| **Effect ledger / result store** | Persist terminal outcome by effect key | Is an external result already known? |
+| **Dispatcher** | Invoke the remote model/tool and write the outcome | Can this retry without changing the business outcome? |
+| **Kafka publisher** | Publish result events from durable state | Can downstream Kafka consumers replay safely? |
+
+One practical sequence is:
+
+```text
+consume input (event_id, effect_key)
+  → transactionally write inbox + intent/outbox
+  → dispatcher reads intent
+  → lookup result(effect_key)
+  → call provider with effect_key if supported
+  → persist result / reconciliation state
+  → publish result event and mark intent complete
+```
+
+The broker record can be acknowledged after the necessary durable local state
+exists. Exact table/database transactions depend on the systems you own; do not
+claim a global transaction where one does not exist.
+
+## Idempotency keys are contracts, not labels
+
+An idempotency key should identify the semantic operation, not an incidental
+Kafka offset:
+
+```text
+tenant:42 / case:9284 / action:triage / policy:v3
+```
+
+That key can be sent to an endpoint only if the endpoint documents how it
+deduplicates, how long it retains keys, what happens to in-progress requests,
+and how conflicting payloads are handled. If a model provider does not honor
+an idempotency key, logging one in your application does not make model
+execution idempotent.
+
+For a tool without such support, persist the request fingerprint and result
+reference, make the tool operation idempotent where possible, and build a
+reconciliation queue for the ambiguous “accepted remotely, unknown locally”
+case.
+
+## Flink Agents 0.2 is preview, so scope its claim carefully
+
+[Flink Agents 0.2](https://flink.apache.org/2026/02/06/apache-flink-agents-0.2.0-release-announcement/)
+is a preview release with experimental APIs/configuration and durable execution
+features. It is useful material for a controlled evaluation. It does **not**
+justify claiming that arbitrary external model or tool effects execute exactly
+once. The remote endpoint's idempotency, durable state placement, recovery
+window, and observability still decide that boundary.
+
+Likewise, [Flink 2.2](https://flink.apache.org/2025/12/04/apache-flink-2.2.0-advancing-real-time-data--ai-and-empowering-stream-processing-for-the-ai-era/)
+has Flink-side AI functions such as `ML_PREDICT` and `VECTOR_SEARCH`; Kafka is
+still the event transport/replay layer around a job, not the owner of those
+functions.
+
+## Observability for ambiguous work
+
+Emit observable facts, not hidden chain-of-thought:
+
+- event ID, effect-key hash, input/schema/policy version;
+- provider/model/tool name, request attempt, latency, cost/tokens where
+  available, and a redacted result reference;
+- ledger state transitions (`intent`, `in_flight`, `result`, `reconciled`);
+- Kafka topic/partition/offset, consumer attempt, and outcome publication;
+- guardrail/evaluation version and human-review reference.
+
+The GenAI OpenTelemetry conventions live in the dedicated
+[semantic-conventions-genai repository](https://github.com/open-telemetry/semantic-conventions-genai).
+Apply access control, redaction, retention, and sampling to trace payloads
+before they become an accidental data lake.
+
+## Test the design by killing it
+
+Inject a stop at every arrow in the skeleton. Then replay the same input:
+
+1. Does the inbox accept it once?
+2. Does the intent survive?
+3. Does the provider see a stable effect key?
+4. Can the ledger distinguish completed, failed, and unknown?
+5. Does a later Kafka result retain enough references to audit the decision?
+
+If the answer to step four is “retry and hope,” the system has an at-least-once
+external-effect boundary. That can be a valid choice—document it, cap the cost,
+and make reconciliation an operated workflow.
+
+## Related
+
+- [Exactly-once semantics](/learn/exactly-once)
+- [Share groups and worker pools](/learn/share-groups)
+- [Transactions Protocol Lab](/protocol/transactions)
+- [Share group agent worker experiment](/notes/share-groups-agent-workers-experiment)

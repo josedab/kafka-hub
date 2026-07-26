@@ -1,0 +1,117 @@
+---
+title: "Model canary replay: decide with quality, cost, and latency"
+description: "Evaluate a baseline and candidate model on deterministic replay samples, then gate a staged rollout with observable, reversible thresholds."
+date: "2026-07-26"
+tags: ["models", "canary", "replay", "evaluation", "observability"]
+---
+
+A model upgrade is a production change, even when the HTTP endpoint stays the
+same. Prompts, tool schemas, retrieval behavior, provider routing, and model
+weights can change quality, cost, latency, safety behavior, and output format.
+
+Kafka's durable replay can produce a controlled input set for an evaluation
+pipeline. It cannot decide whether an answer was good. The decision needs
+versioned evaluation criteria and gates that make trade-offs explicit.
+
+<ModelCanaryReplayLab />
+
+## Build an evaluation record, not a pile of transcripts
+
+For every replayed sample, retain the information needed to reproduce the
+comparison without retaining hidden reasoning:
+
+```json
+{
+  "sample_id": "refund-policy:2026-07-24:17",
+  "input_ref": "restricted://eval/refund-policy/17",
+  "prompt_version": "support-triage@v14",
+  "retrieval_index": "policy-v2",
+  "retrieval_refs": ["policy-73#v18", "policy-81#v4"],
+  "baseline_model": "model-a",
+  "candidate_model": "model-b",
+  "evaluator_version": "groundedness@v5",
+  "guardrail_version": "support-policy@v9"
+}
+```
+
+References are more useful than copying raw customer context into an event.
+Protect access to the underlying inputs, set retention intentionally, and
+record a redaction decision at collection time.
+
+## Fix the sample before comparing the model
+
+Randomly sampling live traffic while provider conditions change can be useful
+for monitoring, but it is a poor first comparison. Start with a deterministic,
+versioned sample set that covers:
+
+- ordinary requests and known high-volume paths;
+- long/short inputs, multilingual or domain-specific text where relevant;
+- retrieval misses, stale references, and document deletions;
+- tool success, timeout, authorization denial, and malformed tool output;
+- policy-sensitive requests and adversarial/abuse cases;
+- cases previously escalated by humans.
+
+Store the selection query/version and sample IDs. A candidate that “improves”
+on a new sample may merely be measured against a different workload.
+
+## Gate three dimensions independently
+
+Quality should not buy unlimited cost or latency. A practical canary writes
+separate acceptance thresholds:
+
+| Gate | Example | Why it is separate |
+| --- | --- | --- |
+| Quality | Candidate must meet a 0.84 floor and not regress baseline | A small average gain can hide a policy-critical failure |
+| Cost | Normalized cost increase must stay below 10% | A higher-quality answer may be unaffordable at peak traffic |
+| Latency | p95 increase must stay below 10% | Interactive users experience tail latency, not average latency |
+
+Add safety/guardrail, schema validity, tool error rate, and human-review gates
+where they matter. Do not collapse all of them into one opaque “model score.”
+
+The lab deliberately holds a candidate that improves quality but exceeds the
+latency cap. That is not a failure of the model; it is an explicit rollout
+decision.
+
+## Replay safely
+
+Run candidate replay against isolated sinks and namespaces:
+
+```text
+production event retention
+  → bounded offset/time selection
+  → redacted eval input references
+  → baseline + candidate calls
+  → versioned evaluation results
+  → review / aggregate report
+```
+
+Never replay effects that send an email, charge an account, mutate a ticket, or
+call an irreversible tool unless the evaluation harness replaces them with an
+approved deterministic fake. Separate reasoning/evaluation from business
+effect execution. See [AI side effects and exactly-once](/learn/ai-side-effects-exactly-once).
+
+## Roll out in observable steps
+
+After offline gates pass:
+
+1. Route a small, explicit traffic percentage to the candidate.
+2. Compare quality/evaluator signals, guardrail outcomes, tool failures,
+   reference freshness, cost, and latency by model and prompt version.
+3. Retain a fast rollback route to the baseline.
+4. Expand only when the canary holds over the intended time/window and traffic
+   mix.
+5. Record the decision, thresholds, reviewers, and exceptions for the next
+   incident or model migration.
+
+The [OpenTelemetry GenAI semantic conventions
+repository](https://github.com/open-telemetry/semantic-conventions-genai)
+contains the current conventions for observable GenAI calls, metrics, events,
+MCP, and providers. It is a better instrumentation reference than dumping
+unbounded prompts or hidden chain-of-thought into a trace.
+
+## Related
+
+- [Streaming RAG freshness](/learn/streaming-rag-freshness)
+- [Agent traces as Kafka topics](/learn/agent-traces)
+- [Kafka, MCP, and A2A](/learn/kafka-mcp-a2a)
+- [Model canary field note](/notes/streaming-ai-2026)

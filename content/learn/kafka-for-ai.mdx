@@ -1,21 +1,30 @@
 ---
-title: Kafka for AI engineers — RAG ingestion, agent traces, embeddings
-description: Where Kafka actually pulls its weight in an AI stack, and where you're better off skipping it.
-date: "2026-05-26"
+title: Kafka for AI engineers — durable inputs, replay, and fan-out
+description: Where Kafka carries durable AI workload facts—and where a model runtime, tool protocol, or direct API owns the boundary instead.
+date: "2026-07-26"
+tags: ["ai", "rag", "agents", "replay", "fanout"]
 ---
 
-Kafka is having a second life as the streaming backbone for AI applications.
-There are good reasons (back-pressure, replay, durable fan-out) and some bad
-ones (resume-driven architecture, "we have Kafka so let's use it"). This
-article walks the three use cases where Kafka genuinely earns its keep in
-an AI stack, with the architecture patterns that work in production.
+Kafka can make an AI system easier to recover and operate when it carries
+durable facts: source changes, work intents, result references, evaluations,
+and audit events. It does not become a model runtime, tool registry, agent task
+protocol, or synchronous chat path merely because those systems emit events.
 
-This article is the entry point for the broader **Kafka for AI Engineers**
-track. It assumes you already understand topics, partitions, and consumer
-groups at the level of the [ISR & acks](/learn/isr-and-acks) and
-[consumer rebalance](/learn/consumer-rebalance) articles.
+This is the entry point for the **Kafka for AI Engineers** track. The track
+keeps a narrow division of responsibility:
 
-## Use case 1 — RAG ingestion pipelines
+| Boundary | Owns |
+| --- | --- |
+| Kafka | Durable ordered transport, retention, replay, independent fan-out |
+| Model/vector/tool systems | Inference, vector writes/search, authorization, external-effect contracts |
+| MCP | JSON-RPC lifecycle and tools/resources/prompts/context exchange |
+| A2A 1.0 | Agent discovery plus message/task/artifact interoperability |
+
+It assumes you already understand topics, partitions, and consumer groups at
+the level of [ISR & acks](/learn/isr-and-acks) and
+[consumer rebalances](/learn/consumer-rebalance).
+
+## Durable pattern 1 — RAG ingestion pipelines
 
 The "embed everything in our document corpus" pipeline is the canonical fit:
 
@@ -24,19 +33,21 @@ docs.ingest  →  embedder workers  →  embeddings.results  →  vector sink
    (raw text)     (call OpenAI/etc)     (vector + metadata)     (Pinecone, pgvector)
 ```
 
-Why Kafka, and not "loop over a list":
+Why Kafka, rather than an untracked one-shot loop:
 
 - **Back-pressure for free.** If the vector sink slows down, the embedder
   workers' commit lag grows but they keep working through the topic at
   their own pace. No retry storms.
-- **Replay.** When you change the embedding model, you re-read
-  `docs.ingest` from offset 0 and write to `embeddings.results.v2`. No
-  re-ingest of source documents needed.
+- **Replay.** When you change an embedding model, re-read a bounded, versioned
+  source stream and write to a candidate index/result topic. Do not overwrite
+  the only serving index without comparison and rollback.
 - **Fan-out.** Add a `summaries.results` consumer that reads the same
   `docs.ingest` topic in a different group. Costs nothing on the producer
   side.
 
-Try it below — turn up the embed latency and watch the lag grow.
+Try it below — turn up the embed latency and watch lag grow. Then continue with
+[streaming RAG freshness](/learn/streaming-rag-freshness) for source/index
+versions, CDC tombstones, backfills, and a measurable stale window.
 
 <RagPipelineSim />
 
@@ -72,32 +83,34 @@ per-tenant locality and add no benefit.
   blocking model call. Otherwise you'll burn the entire batch on one
   timeout and rebalance.
 
-## Use case 2 — Agent execution traces
+## Durable pattern 2 — observable agent execution events
 
-LLM agents produce reams of intermediate state — thoughts, tool calls,
-results, retries. Treating each agent run as a transaction that ends with a
-single "done" event throws away everything that's useful for debugging,
-evaluation, and offline training.
+An agent should produce observable operation events—tool requests/results,
+retrieval references, guardrail/evaluation outcomes, status changes, retries,
+and final artifacts. Treating each run as only a final “done” row throws away
+the evidence needed for debugging, evaluation, cost control, and incident
+recovery.
 
 A trace-as-topic pattern:
 
 ```
-agent.runs        topic, key=run_id, retention=long, compaction=off
-agent.thoughts    topic, key=run_id, retention=long
-agent.tools       topic, key=run_id, retention=long
-agent.evals       compacted topic, key=run_id, value=eval verdict
+agent-events.v1   topic, key=run_id, ordered event timeline
+agent-state.v1    compacted topic, key=run_id, latest safe status
+agent-evals.v1    topic, key=run_id, versioned evaluator outcomes
 ```
 
-The producer writes events at every step of the agent loop. Downstream
-consumers do whatever they want with the stream — write to a trace UI
-(Langsmith / Phoenix / homemade), pipe into an eval store, score for RLHF
-training, surface as analytics.
+The producer writes observable facts at each operation boundary. Downstream
+consumers can build a trace UI, evaluation store, audit archive, or aggregate
+metrics independently. Do not stream hidden chain-of-thought or unbounded raw
+prompts/tool payloads; redact at collection and use access-controlled
+references for larger sensitive data.
 
-Compaction on the `agent.evals` topic lets you mutate the verdict (e.g. a
-human review changes the original auto-score) without losing the audit
-chain — the original score stays in `agent.thoughts`.
+Use a compacted state topic for the current review verdict and retain an
+append-only evaluator event history when auditability requires it. A later
+human review should be a new observed event, not a mutation that erases why an
+earlier decision happened.
 
-## Use case 3 — Online feature pipelines
+## Durable pattern 3 — online feature pipelines
 
 For ML systems that need fresh features at inference time (recommendations,
 fraud, ranking), Kafka in front of an online feature store is the standard
@@ -109,41 +122,58 @@ events  →  feature.computed  →  feature store (Redis/Aerospike/Cassandra)
             offline DWH for training
 ```
 
-The key property Kafka gives you: the **same** feature pipeline writes both
+The useful property is that the same versioned event contract can drive both
 the online store (low-latency point lookups) and the offline warehouse
-(joinable batch). You get train/serve consistency for free because both
-sides materialize from the same topic.
+(joinable batch). That helps teams reason about train/serve alignment, but it
+does not make independently operated materializations automatically consistent.
 
-This pattern is how Uber's Michelangelo, LinkedIn's Pro-ML, and most
-in-house "feature platforms" are built.
+The important property is a replayable event contract and explicit materialized
+state—not a claim that any two online/offline stores are automatically
+consistent.
+
+## Choose a different boundary when Kafka is not the answer
+
+- **Tool/resource discovery:** use
+  [MCP](https://modelcontextprotocol.io/docs/learn/architecture), whose
+  JSON-RPC client/server protocol exposes lifecycle, tools, resources, prompts,
+  and context exchange.
+- **Cross-agent task interoperability:** use
+  [A2A 1.0](https://a2a-protocol.org/latest/specification/) for Agent Cards,
+  messages, tasks, artifacts, and updates between independent agents.
+- **Interactive request/response:** use a direct authenticated API on the user
+  path. Emit durable events around it only when replay/fan-out is needed.
+
+Read [Kafka, MCP, and A2A](/learn/kafka-mcp-a2a) for composition choices.
 
 ## When **not** to use Kafka in your AI stack
 
-- **Synchronous chat agents.** A user is staring at the screen waiting for
-  an answer. Kafka adds latency budget you don't have. Direct API calls
-  with a tracing library on the side are the right pattern. Use Kafka for
-  the *trace events*, not the chat path.
+- **Synchronous chat agents.** A user is waiting for an answer. Kafka adds
+  latency and failure modes to a path that should be direct. Use Kafka for
+  durable audit/evaluation events, not the chat response itself.
 - **Single-model embedding job that runs once.** A Python script with
   `concurrent.futures` is faster to write and runs in 10 minutes. Don't
   build a streaming platform for a one-shot.
-- **You don't already have ops capacity for Kafka.** Running a stable
-  Kafka cluster is a real workload. If you don't already have one, start
-  with Redpanda Cloud or Confluent Cloud — managed Kafka removes the worst
-  of the operational pain and lets you focus on the AI part.
+- **You don't have operational capacity for Kafka.** Running a stable cluster
+  is real work. A managed service may change that trade-off, but it does not
+  remove schema, retention, privacy, or recovery design.
 
 ## Related
 
-- [Consumer rebalances](/learn/consumer-rebalance) — long-running model
-  calls and rebalance protocols are an unhappy pair; cooperative-sticky is
-  the answer.
+- [Share groups](/learn/share-groups) — independent workers can share records,
+  but locks do not make model/tool effects exactly once.
+- [Consumer rebalances](/learn/consumer-rebalance) — long model calls need
+  bounded poll/processing and an explicit group protocol choice.
 - [ISR mechanics](/learn/isr-and-acks) — you almost always want `acks=all`
   for embedding pipelines because the downstream cost of a lost event is
   another API call.
-- [Exactly-once semantics](/learn/exactly-once) — useful when chaining
-  topics in an agent system to avoid duplicate tool calls.
+- [AI side effects and exactly-once](/learn/ai-side-effects-exactly-once) —
+  Kafka EOS does not atomically commit an arbitrary external call.
+- [Model canary replay](/learn/model-canary-replay) — compare versioned
+  candidates using quality, cost, latency, and safety gates.
 
 ## Further reading
 
-- Yaniv Rodenski et al., "Kafka as the Backbone of Online Feature Stores"
-- "Streaming LLMs" — the emerging pattern for high-throughput agent fleets
-- LinkedIn engineering, "Operationalizing ML at LinkedIn"
+- [Flink 2.2: real-time data + AI](https://flink.apache.org/2025/12/04/apache-flink-2.2.0-advancing-real-time-data--ai-and-empowering-stream-processing-for-the-ai-era/)
+  — `ML_PREDICT` and `VECTOR_SEARCH` are Flink capabilities, not Kafka APIs.
+- [OpenTelemetry GenAI semantic conventions](https://github.com/open-telemetry/semantic-conventions-genai)
+  — current reference for observable GenAI calls, events, metrics, MCP, and providers.

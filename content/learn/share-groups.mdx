@@ -1,0 +1,128 @@
+---
+title: "Share groups: worker pools beyond the partition count"
+description: "Use per-record locks, acknowledgements, releases, and delivery counts for independent Kafka work—without mistaking a lease for exactly-once effects."
+date: "2026-07-26"
+tags: ["share-groups", "kip-932", "consumer-groups", "worker-pools"]
+scenarios: ["hot-partition"]
+---
+
+A classic consumer group gives one member exclusive ownership of a partition.
+That is excellent when partition order is the unit of work, but it caps useful
+parallelism at the partition count. Adding a tenth consumer to a six-partition
+classic group does not create a tenth active partition owner.
+
+[KIP-932: Queues for Kafka](https://cwiki.apache.org/confluence/spaces/KAFKA/pages/255070434/KIP-932+Queues+for+Kafka)
+introduces **share groups** for a different shape of work. Members cooperate on
+records, more members can be useful than partitions, and each record carries
+its own delivery state. This is Kafka's share-group model over regular topics,
+not an undifferentiated “queue mode” and not a replacement for fan-out.
+
+**Status and version caveat:** KIP-932 is Accepted. This article is reviewed
+against Kafka 4.3.1; validate the broker/client versions and exact configuration
+support in the deployment you operate. A KIP describes semantics, not a
+drop-in production configuration.
+
+<ShareGroupWorkerPool />
+
+## The mental model: acquire a record, not a partition
+
+In a share group, a consumer fetches an available record and acquires it under
+a time-limited lock. The consumer then has four meaningful choices:
+
+| Action | Scheduling result | When it is appropriate |
+| --- | --- | --- |
+| **Acknowledge** | Record is accepted as successfully processed | The durable outcome is known and safe |
+| **Release** | Record becomes available for another delivery | A bounded transient failure needs retry |
+| **Reject** | Record is marked unprocessable and is not made available again | The reason is classified and an operator path exists |
+| **Do nothing** | Lock expires; record becomes available again | A worker crashed, stalled, or lost its lease |
+
+KIP-932 describes a default 30-second acquisition lock and
+`share.record.lock.duration.ms`. It also describes a
+`group.share.partition.max.record.locks` broker limit. Those are throughput,
+visibility, and failure-recovery controls—not magic values. Set them from
+measured normal and tail latency, bounded retries, and the number of in-flight
+effects your downstream system can tolerate.
+
+## Why more workers than partitions can make sense
+
+Suppose a topic has three partitions and each record invokes an independent,
+slow model/tool workflow. A classic group can have at most three active
+partition owners. A share group can direct available records from those
+partitions to more worker processes, while locks prevent the same available
+record being handed to two workers at the same time.
+
+This does **not** remove all ordering concerns:
+
+- Partition order still exists in the log. Decide whether work items keyed to
+  the same entity need serialized handling before sharing them.
+- Locks are per record and time-bound. A long-running worker can overlap with a
+  redelivery after expiry.
+- A hot partition can still dominate available work. Measure per-partition
+  acquisition, lag, and delivery counts instead of only group totals.
+
+Use [hot partition](/simulate?scenario=hot-partition) to see how spare group
+capacity can coexist with a one-partition bottleneck.
+
+## Delivery count turns poison work into a policy decision
+
+Share groups track delivery attempts. That lets a system stop pretending that
+the fifteenth retry is progress, but it does not define your poison policy.
+Write one before production:
+
+```text
+attempt 1–2  → release after bounded, classified transient errors
+attempt 3    → park for investigation / effect-ledger reconciliation
+malformed    → reject with reason code and immutable evidence reference
+```
+
+Avoid a “reject and forget” queue. A rejected record needs an auditable reason,
+an owner, a retention period, and a way to replay after correction when that is
+safe. Do not put raw prompts, customer data, or credentials in the reason
+string; link to access-controlled evidence instead.
+
+## Locks do not make model or tool effects exactly once
+
+Consider a worker that calls a model or an external tool, the call succeeds,
+and the process stops before it records the result or acknowledges the record.
+The lock eventually expires. A second worker can correctly receive the record
+and still repeat the external call.
+
+Use an effect key derived from the business operation, then make recovery
+explicit:
+
+```text
+acquire Kafka record
+  → read durable result by effect_key
+  → write durable intent / attempt
+  → invoke model or tool with effect_key where the provider honors it
+  → persist terminal result
+  → acknowledge Kafka record
+```
+
+The key can deduplicate an endpoint that supports idempotency. The durable
+result avoids a repeat after the result was persisted. Neither alone closes the
+crash gap after an arbitrary remote service accepts work. See
+[AI side effects and exactly-once](/learn/ai-side-effects-exactly-once) for the
+failure matrix.
+
+## What to instrument
+
+For a share-group worker pool, observe:
+
+- available, acquired, acknowledged, released, rejected, and lock-expired
+  records by topic-partition;
+- delivery-count distribution and the number crossing the poison threshold;
+- acquisition-to-result and result-to-acknowledgement latency;
+- effect ledger hit/miss rate and idempotency-conflict outcome;
+- worker availability and external dependency error classes.
+
+Correlate those signals with record key hashes and effect-key hashes—not raw
+customer payloads or hidden reasoning.
+
+## Related
+
+- [Share Groups Protocol Lab](/protocol/share-groups) — heartbeat, fetch,
+  acknowledge, release, reject, expiry, and poison handling on the wire.
+- [KIP-932 in the KIP index](/kips#kip-932)
+- [Consumer rebalance storm runbook](/runbooks/consumer-rebalance-storm)
+- [Kafka for AI engineers](/learn/kafka-for-ai)

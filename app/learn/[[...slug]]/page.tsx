@@ -24,15 +24,30 @@ import { RagPipelineSim } from "@/components/demos/rag-pipeline-sim";
 import { DiagnoseSnippet } from "@/components/demos/diagnose-snippet";
 import { EmbeddingBackpressureSim } from "@/components/demos/embedding-backpressure-sim";
 import { AgentTraceTopology } from "@/components/demos/agent-trace-topology";
+import { ShareGroupWorkerPool } from "@/components/demos/share-group-worker-pool";
+import { SideEffectReplayLab } from "@/components/demos/side-effect-replay-lab";
+import { RagFreshnessLab } from "@/components/demos/rag-freshness-lab";
+import { AiProtocolDecisionLab } from "@/components/demos/ai-protocol-decision-lab";
+import { ModelCanaryReplayLab } from "@/components/demos/model-canary-replay-lab";
 import { G } from "@/components/glossary/g";
 import { GlossaryDefinition } from "@/components/glossary/definition";
 import { ReadingProgress } from "./reading-progress";
 
 type Params = { slug?: string[] };
 type TrackLink = { slug: string; title: string; href: string };
+type LearningTrack = { title: string; pages: string[] };
+type TrackContext = { track: LearningTrack; index: number };
 
 const cheatsheetSlugs = new Set(cheatsheets.map((sheet) => sheet.slug));
-const learningTrack = learnMeta.track;
+const learningTracks = learnMeta.tracks as LearningTrack[];
+
+function getTrackContext(slug: string): TrackContext | null {
+  for (const track of learningTracks) {
+    const index = track.pages.indexOf(slug);
+    if (index >= 0) return { track, index };
+  }
+  return null;
+}
 
 function getTrackLink(trackSlug: string | undefined): TrackLink | null {
   if (!trackSlug) return null;
@@ -67,14 +82,14 @@ export default async function Page(props: { params: Promise<Params> }) {
   const slug = page.slugs.join("/");
   const isLearnIndex = page.url === "/learn" || slug === "" || slug === "index";
   const hasCheatsheet = cheatsheetSlugs.has(slug);
-  const trackIndex = learningTrack.indexOf(slug);
-  const isTrackedArticle = trackIndex >= 0;
-  const trackTotal = learningTrack.length;
-  const previousTrackItem = isTrackedArticle
-    ? getTrackLink(learningTrack[trackIndex - 1])
+  const trackContext = getTrackContext(slug);
+  const trackIndex = trackContext?.index ?? -1;
+  const trackTotal = trackContext?.track.pages.length ?? 0;
+  const previousTrackItem = trackContext
+    ? getTrackLink(trackContext.track.pages[trackIndex - 1])
     : null;
-  const nextTrackItem = isTrackedArticle
-    ? getTrackLink(learningTrack[trackIndex + 1])
+  const nextTrackItem = trackContext
+    ? getTrackLink(trackContext.track.pages[trackIndex + 1])
     : null;
   const relatedScenarios = getRelatedScenarios(page.data.scenarios);
 
@@ -94,9 +109,9 @@ export default async function Page(props: { params: Promise<Params> }) {
         tableOfContentPopover={{ enabled: false }}
       >
         <DocsTitle>{page.data.title}</DocsTitle>
-        {isTrackedArticle ? (
+        {trackContext ? (
           <Badge tone="success" className="mt-3 w-fit">
-            Foundations → Advanced · Step {trackIndex + 1} of {trackTotal}
+            {trackContext.track.title} · Step {trackIndex + 1} of {trackTotal}
           </Badge>
         ) : null}
         <DocsDescription>{page.data.description}</DocsDescription>
@@ -123,6 +138,11 @@ export default async function Page(props: { params: Promise<Params> }) {
               DiagnoseSnippet,
               EmbeddingBackpressureSim,
               AgentTraceTopology,
+              ShareGroupWorkerPool,
+              SideEffectReplayLab,
+              RagFreshnessLab,
+              AiProtocolDecisionLab,
+              ModelCanaryReplayLab,
               G,
               GlossaryDefinition,
             }}
@@ -131,10 +151,11 @@ export default async function Page(props: { params: Promise<Params> }) {
         {relatedScenarios.length > 0 ? (
           <RelatedScenarios scenarios={relatedScenarios} />
         ) : null}
-        {isTrackedArticle ? (
+        {trackContext ? (
           <TrackNavigation
             current={trackIndex + 1}
             total={trackTotal}
+            title={trackContext.track.title}
             previous={previousTrackItem}
             next={nextTrackItem}
           />
@@ -181,11 +202,13 @@ function RelatedScenarios({ scenarios }: { scenarios: Scenario[] }) {
 function TrackNavigation({
   current,
   total,
+  title,
   previous,
   next,
 }: {
   current: number;
   total: number;
+  title: string;
   previous: TrackLink | null;
   next: TrackLink | null;
 }) {
@@ -197,7 +220,7 @@ function TrackNavigation({
       <div className="flex flex-col gap-4 border-b border-fd-border pb-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <p className="text-xs font-semibold uppercase tracking-[0.18em] text-fd-muted-foreground">
-            Foundations → Advanced
+            {title}
           </p>
           <h2
             id="track-navigation-heading"

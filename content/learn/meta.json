@@ -9,20 +9,43 @@
     "controller-and-metadata",
     "exactly-once",
     "log-compaction",
+    "---Kafka for AI Engineers---",
     "kafka-for-ai",
+    "share-groups",
     "embedding-backpressure",
+    "streaming-rag-freshness",
     "agent-traces",
+    "ai-side-effects-exactly-once",
+    "kafka-mcp-a2a",
+    "model-canary-replay",
     "---Reference---",
     "glossary"
   ],
-  "track": [
-    "isr-and-acks",
-    "unclean-leader-election",
-    "consumer-rebalance",
-    "partition-assignment",
-    "controller-and-metadata",
-    "exactly-once",
-    "log-compaction",
-    "kafka-for-ai"
+  "tracks": [
+    {
+      "title": "Foundations → Advanced",
+      "pages": [
+        "isr-and-acks",
+        "unclean-leader-election",
+        "consumer-rebalance",
+        "partition-assignment",
+        "controller-and-metadata",
+        "exactly-once",
+        "log-compaction"
+      ]
+    },
+    {
+      "title": "Kafka for AI Engineers",
+      "pages": [
+        "kafka-for-ai",
+        "share-groups",
+        "embedding-backpressure",
+        "streaming-rag-freshness",
+        "agent-traces",
+        "ai-side-effects-exactly-once",
+        "kafka-mcp-a2a",
+        "model-canary-replay"
+      ]
+    }
   ]
 }

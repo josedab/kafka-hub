@@ -7,9 +7,7 @@ This is the Learn surface. Each article ships with at least one custom
 interactive component so you can actually manipulate the system you're reading
 about. Pick a topic from the sidebar.
 
-## Article slate
-
-The full Phase 1 slate, all live:
+## Foundations
 
 - [ISR mechanics and acks semantics](/learn/isr-and-acks) — replica state + acks
 - [Quorum loss and unclean leader election](/learn/unclean-leader-election) — safe vs unclean failover
@@ -18,10 +16,25 @@ The full Phase 1 slate, all live:
 - [The controller and metadata propagation](/learn/controller-and-metadata) — KRaft, fencing, epochs
 - [Exactly-once semantics](/learn/exactly-once) — idempotent + transactional producer
 - [Log compaction internals](/learn/log-compaction) — tombstones, dirty ratio, LogCleaner
-- [Kafka for AI engineers](/learn/kafka-for-ai) — RAG ingestion, agent traces, online features
 
-Need a quick decode ring? Use the [Kafka glossary](/learn/glossary) for ISR, KRaft, tombstones, and the rest.
+## Kafka for AI Engineers
+
+This track starts with Kafka's durable event/replay role and then makes the
+boundaries around share groups, embeddings, retrieval, agent observability,
+external effects, protocols, and model rollout explicit.
+
+- [Kafka for AI engineers](/learn/kafka-for-ai) — where Kafka belongs in the stack
+- [Share groups](/learn/share-groups) — per-record worker pools beyond partitions
+- [Embedding pipeline backpressure](/learn/embedding-backpressure) — bounded GPU and sink pressure
+- [Streaming RAG freshness](/learn/streaming-rag-freshness) — CDC versions, tombstones, and dual indexes
+- [Agent traces as Kafka topics](/learn/agent-traces) — observable events and controlled retention
+- [AI side effects and exactly-once](/learn/ai-side-effects-exactly-once) — external effect boundaries
+- [Kafka, MCP, and A2A](/learn/kafka-mcp-a2a) — protocol composition
+- [Model canary replay](/learn/model-canary-replay) — quality, cost, and latency gates
+
+Need a quick decode ring? Use the [Kafka glossary](/learn/glossary) for ISR,
+KRaft, tombstones, and the rest. For release-aware working observations, visit
+[Field Notes](/notes).
 
 If you have a topic you wish existed here,
 [open an issue](https://github.com/josedab/kafka-hub/issues) on the repo.
-

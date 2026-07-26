@@ -1,47 +1,83 @@
 ---
-title: "Agent traces as Kafka topics"
-description: "Treating each LLM tool-call, thought, and observation as a partitioned event. The schema and topic layout that scales."
-date: "2026-05-26"
+title: "Agent traces as Kafka topics: observable events, not hidden reasoning"
+description: "A Kafka topic layout for agent operations, retrieval references, tool outcomes, evaluations, privacy controls, and replay."
+date: "2026-07-26"
+tags: ["agents", "observability", "opentelemetry", "privacy", "replay"]
 ---
 
-LLM agents produce a stream, not a row. Every tool call, thought, observation,
-retry, and final answer is useful for debugging and evaluation. Kafka gives that
-stream ordering, retention, fan-out, and replay.
+An agent run is an event timeline, not a final answer row. Kafka can retain and
+fan out the observable operational facts needed to debug, evaluate, and audit a
+run: status changes, retrieval references, model/tool calls, retries,
+guardrail decisions, costs, latency, and final artifacts.
+
+It should **not** become a repository for hidden chain-of-thought, unrestricted
+prompts, raw tool payloads, or customer data that has no retention/access
+contract.
 
 <AgentTraceTopology />
 
-## One event type, not five topics
+## One event timeline, keyed by run ID
 
-Start with one append-only topic for the run timeline:
+Start with one append-only topic for a run timeline. Key every event by
+`agent_run_id`; Kafka only orders records within a partition, so a stable
+run key is what makes per-run reconstruction deterministic.
 
 ```json
 {
   "agent_run_id": "run_01HZY",
   "seq": 42,
-  "kind": "tool_call",
-  "ts": "2026-05-26T15:03:11Z",
-  "payload": { "tool": "search", "args_ref": "s3://trace-blobs/run_01HZY/42" }
+  "kind": "tool_result",
+  "ts": "2026-07-26T15:03:11Z",
+  "tool_name": "knowledge-search",
+  "status": "ok",
+  "input_ref": "restricted://trace-inputs/run_01HZY/42",
+  "result_ref": "restricted://trace-results/run_01HZY/42",
+  "latency_ms": 184,
+  "correlation_id": "corr_a4f9"
 }
 ```
 
-Use `kind: tool_call | thought | observation | error | final`. One topic keeps
-ordering simple because every event for a run has the same key. Splitting into
-`agent.thoughts`, `agent.tools`, and `agent.errors` makes global reconstruction
-harder and turns debugging into a join problem.
+Useful `kind` values are observable operations, not private reasoning:
 
-The companion topic is compacted state:
-
-```json
-{ "agent_run_id": "run_01HZY", "status": "running", "last_seq": 42, "phase": "searching" }
+```text
+run_started | retrieval | model_request | model_response | tool_request
+tool_result | retry | guardrail | evaluation | artifact | run_finished | error
 ```
 
-That topic answers "what is agent X doing right now?" without scanning the full
-trace log.
+The `seq` field is application-level diagnostic evidence. Do not assume it can
+replace Kafka's per-partition ordering; validate it and emit an error event if a
+producer observes a gap it cannot explain.
 
-## Partition by run id
+## Topic layout and retention
 
-Key every trace event by `agent_run_id`. Kafka only promises order within a
-partition, so all events for one run must land on one partition.
+```properties
+# Complete ordered timeline per run
+agent-events.v1.cleanup.policy=delete
+agent-events.v1.retention.ms=604800000
+agent-events.v1.partitions=96
+agent-events.v1.replication.factor=3
+
+# Latest safe state per run
+agent-state.v1.cleanup.policy=compact
+agent-state.v1.min.cleanable.dirty.ratio=0.2
+agent-state.v1.segment.ms=21600000
+
+# Versioned outcome and evaluation stream
+agent-events-eval.v1.cleanup.policy=delete
+agent-events-eval.v1.retention.ms=7776000000
+```
+
+Separate topics by purpose, retention, and access policy—not merely by event
+kind. Operational traces may expire quickly. Evaluator outcomes may need a
+longer, tighter-controlled retention period. A compacted state topic answers
+“what is safe to show as current?” without scanning the complete timeline.
+
+Use one schema version strategy and include the prompt, model, retrieval-index,
+tool, guardrail, and evaluator versions as fields or references. When schemas
+change, consumers must tolerate versioned events rather than assume every
+historic record has today's fields.
+
+## Partition by run ID, watch hot runs
 
 ```ts
 producer.send({
@@ -51,76 +87,76 @@ producer.send({
 });
 ```
 
-This gives you deterministic replay for one run and horizontal scale across
-many runs. If a single run can emit millions of events, the agent is now the hot
-key; shard the run into explicit phases instead of changing keys mid-run.
+This gives ordered replay for one run and scales across runs. If one run emits
+millions of operations, it is a hot key. Split its work into explicitly named
+phases or introduce a different correlation model; silently changing keys
+mid-run destroys the simple reconstruction guarantee.
 
-## Topic layout
-
-```properties
-# Complete timeline, ordered per run
-agent-events.v1.cleanup.policy=delete
-agent-events.v1.retention.ms=604800000
-agent-events.v1.partitions=96
-agent-events.v1.replication.factor=3
-
-# Latest state per run
-agent-state.v1.cleanup.policy=compact
-agent-state.v1.min.cleanable.dirty.ratio=0.2
-agent-state.v1.segment.ms=21600000
-
-# Long-lived traces for offline scoring
-agent-events-eval.v1.cleanup.policy=delete
-agent-events-eval.v1.retention.ms=7776000000
-```
-
-Separate topics by purpose, not by event kind. `ops` traces can expire quickly;
-`eval` traces live longer because graders, auditors, and offline training jobs
-consume them days later.
-
-## Replay and debug
-
-To reconstruct a run, consume from the beginning and stop when you reach the
-final event for the requested key:
-
-```bash
-kafka-console-consumer \
-  --topic agent-events.v1 \
-  --from-beginning \
-  --property print.key=true | grep 'run_01HZY'
-```
-
-In production, use a real consumer with `assign()` to seek only the partitions
-that could contain the run. The important rule is that the trace topic remains
-append-only. Fix bad state by writing a new event, not by mutating history.
-
-## Fan-out into evaluation
-
-The same `agent-events.v1` stream can feed multiple consumers:
+## Fan-out into state, evaluation, and audit
 
 ```text
 agent-events.v1
-  ├─ agent-state-writer  →  agent-state.v1 (compact)
-  ├─ eval-pipeline       →  agent-scores.v1
-  └─ debug-replay        →  trace warehouse
+  ├─ state writer       → agent-state.v1 (compacted)
+  ├─ evaluation worker  → agent-events-eval.v1
+  ├─ trace viewer       → controlled read model
+  └─ audit archive      → retention-managed evidence store
 ```
 
-The eval pipeline usually waits for `kind=final`, then joins previous tool calls
-and observations to score the outcome: groundedness, cost, latency, tool error
-rate, and human-review verdicts.
+Each consumer group owns its own offsets and replay policy. The evaluator can
+wait for `run_finished`, join observed retrieval/tool/model events by
+`agent_run_id`, and score groundedness, policy compliance, tool error rate,
+cost, latency, and a human-review verdict. It should retain result references
+instead of duplicating sensitive text.
 
-## Pitfalls
+## Align with OpenTelemetry without duplicating everything
 
-- **Huge tool-call args.** Store large JSON, base64 images, PDFs, and browser
-  screenshots in object storage. Put a content-addressed reference in Kafka.
-- **PII in observations.** Tool outputs often contain customer data. Classify,
-  redact, and set shorter retention for operational trace topics.
-- **GDPR deletion.** Compacted state can be tombstoned with `value=null`; raw
-  trace topics need retention boundaries or a separate delete workflow.
-- **Runaway thoughts.** If prompts emit megabytes of reasoning, cap payload
-  size at the producer and write an `error` event when truncation happens.
+The GenAI semantic conventions now live in the dedicated
+[OpenTelemetry semantic-conventions-genai repository](https://github.com/open-telemetry/semantic-conventions-genai).
+Use trace/span IDs and a correlation ID to connect distributed traces to Kafka
+events. Emit the Kafka event as durable evidence of an operation transition;
+emit OTel spans/metrics for request-level latency and operational telemetry.
+
+Useful fields include:
+
+- provider, model, route, status, latency, tokens, and cost;
+- retrieval query/reference IDs, corpus/index version, result count, and
+  freshness;
+- tool name, authorization result, retry count, effect-key hash, and result
+  reference;
+- guardrail/evaluator version, decision/verdict, and human-review reference.
+
+Avoid storing raw hidden reasoning. The information necessary to troubleshoot a
+tool call is its request class, authorization outcome, input/result reference,
+error, latency, retry, and durable effect result—not private intermediate text.
+
+## Privacy, redaction, and retention are data-plane requirements
+
+- **Minimize at source.** Redact or tokenize sensitive fields before producing
+  a trace event; do not rely only on a downstream sink filter.
+- **Reference large data.** Store screenshots, PDFs, tool payloads, and long
+  model inputs/outputs behind access-controlled object references with
+  integrity/version metadata.
+- **Separate access.** Keep operational trace readers from automatically
+  reading source documents or customer data.
+- **Set deletion boundaries.** Compacted state can be tombstoned, but raw
+  delete-retained event topics need retention and deletion workflows that match
+  policy obligations.
+- **Cap volume.** Enforce producer payload limits and record a sanitized
+  truncation/error event when a trace is too large.
+
+## Replay and debug
+
+To reconstruct a run, consume the partition that contains its run key and
+replay the observable timeline in order. Production debugging should use a
+bounded consumer/seek rather than a broad terminal pipeline over all records.
+Correct bad state by writing a new observable event; do not mutate history.
 
 ## Related
-- [Log compaction internals](/learn/log-compaction) — how `agent-state.v1` keeps only the latest state per run.
-- [Partition assignment strategies](/learn/partition-assignment) — why run-key ordering depends on stable partition ownership.
-- [Kafka for AI engineers](/learn/kafka-for-ai) — the broader AI architecture overview.
+
+- [Model canary replay](/learn/model-canary-replay) — versioned evaluations and
+  quality/cost/latency decisions.
+- [Kafka, MCP, and A2A](/learn/kafka-mcp-a2a) — tool and agent boundaries.
+- [AI side effects and exactly-once](/learn/ai-side-effects-exactly-once) —
+  correlate durable result state without claiming arbitrary external exactly-once.
+- [Log compaction internals](/learn/log-compaction) — why `agent-state.v1`
+  retains the latest value per run.

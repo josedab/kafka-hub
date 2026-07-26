@@ -1,0 +1,147 @@
+---
+title: "Streaming RAG freshness: versions, tombstones, and stale windows"
+description: "Design RAG ingestion as a versioned event pipeline: CDC updates, deletes, model backfills, dual indexes, and bounded freshness under pressure."
+date: "2026-07-26"
+tags: ["rag", "cdc", "embeddings", "flink-2.2", "backpressure"]
+---
+
+“Near real time” is not a RAG freshness contract. A user asks a document
+question against a source revision; the retrieval system serves an embedding
+made from some indexed revision at some point in time. Those must be observable
+as separate facts.
+
+<RagFreshnessLab />
+
+## Make version drift a first-class metric
+
+At minimum, carry these fields through the pipeline:
+
+```json
+{
+  "document_id": "policy-73",
+  "source_version": 18,
+  "event_kind": "upsert",
+  "content_ref": "restricted://docs/policy-73/v18",
+  "embedding_model": "embed-v2",
+  "index_name": "policy-candidate-v2",
+  "indexed_version": 18
+}
+```
+
+The source owns `source_version`. The index reports `indexed_version` and
+model/index identity. The **stale window** is not merely consumer lag:
+
+```text
+source accepted → CDC emitted → embedding completed → index write committed
+```
+
+Measure each interval. A low Kafka lag does not prove a vector write committed,
+and a completed vector write does not prove the retrieval service has switched
+to that index.
+
+## CDC is a changelog, so deletes matter
+
+An update can enqueue a new embedding. A delete must enqueue a tombstone or
+equivalent delete event that reaches every materialization:
+
+```text
+database CDC
+  → docs.changelog (key=document_id, version=18)
+  → chunk / embed workers
+  → vectors.primary / vectors.candidate
+  → retrieval serving index
+```
+
+Do not silently drop tombstones because “the document is gone from the source.”
+Until the index observes the delete, stale content can remain retrievable.
+Ordering by document key and rejecting an index write for an older source
+version prevents a late event from resurrecting deleted or superseded content.
+
+For tenant-level erasure, plan data isolation, deletion verification, and
+retention at every hop: raw source, chunks, embeddings, vector index, traces,
+and evaluation snapshots.
+
+## Embedding latency creates a feedback loop
+
+Embedding endpoints and vector sinks are external capacity boundaries. When
+they slow:
+
+1. Kafka consumer lag grows.
+2. The pending stale window grows.
+3. New source versions arrive before old work drains.
+4. A naive retry loop magnifies cost and hot-key pressure.
+
+Set a freshness SLA that can be operated, for example:
+
+| Signal | Example question |
+| --- | --- |
+| Source-to-index p95/p99 | How old can the retrieval corpus be at the user boundary? |
+| Per-document version gap | Are source v18 and indexed v17 diverging for a hot key? |
+| Tombstone age | How long can deleted content remain queryable? |
+| Queue age by model/index | Is a backfill starving live changes? |
+| Sink error/retry budget | Is the vector index accepting the intended write rate? |
+
+Backpressure should protect the system without hiding the breach. Bound local
+queues, pause or rate-limit at intentional points, retry classified transient
+errors with a budget, and route exhausted failures to an auditable repair flow.
+See [embedding pipeline backpressure](/learn/embedding-backpressure) for the
+consumer-side mechanics.
+
+## Model changes are index migrations
+
+Changing an embedding model changes vector space. Overwriting the only index
+in place makes it difficult to compare relevance, explain a bad result, or roll
+back. Prefer a versioned rollout:
+
+```text
+docs.changelog ─┬→ embed-v1 → index-primary-v1 (serving)
+                └→ embed-v2 → index-candidate-v2 (backfill + shadow eval)
+```
+
+1. Replay a bounded snapshot to a candidate index.
+2. Keep live CDC changes flowing to both indexes until the candidate catches up.
+3. Compare retrieval references, quality evaluations, latency, and cost against
+   the same deterministic query set.
+4. Shift a small, observable share of traffic.
+5. Retain the old index until rollback and deletion obligations are satisfied.
+
+The [model canary replay lab](/learn/model-canary-replay) covers the evaluation
+gate. “The new embedding model is more accurate” is not enough; it must be
+compared on the corpus, policy, query mix, and retrieval metrics you serve.
+
+## Where Flink 2.2 fits—and where Kafka fits
+
+The [Flink 2.2 announcement](https://flink.apache.org/2025/12/04/apache-flink-2.2.0-advancing-real-time-data--ai-and-empowering-stream-processing-for-the-ai-era/)
+describes `ML_PREDICT` and `VECTOR_SEARCH` as **Flink** capabilities.
+`VECTOR_SEARCH` supports real-time vector similarity retrieval in Flink;
+`ML_PREDICT` is a Flink model inference feature. They are not Kafka APIs.
+
+Kafka can supply durable ordered CDC events, replay a backfill, and fan out
+updates to different materializations. A Flink job can transform, infer, or
+search according to its own state/checkpoint and connector semantics. The
+vector database and serving tier have their own write/read consistency. Put the
+correct SLO and failure handling at each boundary.
+
+## A reference flow that stays explainable
+
+```text
+source CDC event
+  → version validator (reject old revisions)
+  → chunking + embedding request
+  → bounded async model call
+  → versioned vector upsert / tombstone
+  → index-commit acknowledgement
+  → retrieval/evaluation event with source + index references
+```
+
+Store large text and embeddings in the right data store; events should include
+the versioned, access-controlled references needed to recover and audit.
+Observe calls, retrievals, guardrails, evaluation results, cost, latency, and
+references—not raw hidden reasoning.
+
+## Related
+
+- [Kafka for AI engineers](/learn/kafka-for-ai)
+- [Embedding pipeline backpressure](/learn/embedding-backpressure)
+- [Agent traces as Kafka topics](/learn/agent-traces)
+- [Streaming AI field note](/notes/streaming-ai-2026)

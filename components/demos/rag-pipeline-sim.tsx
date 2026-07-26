@@ -17,8 +17,11 @@ interface Doc {
 
 const TOPICS = ["docs.ingest", "embeddings.requests", "embeddings.results"];
 
-function randVector() {
-  return Array.from({ length: 6 }, () => Math.round(Math.random() * 100) / 100);
+function vectorForDocument(id: number) {
+  return Array.from(
+    { length: 6 },
+    (_, index) => ((id * 41 + index * 17) % 101) / 100,
+  );
 }
 
 export function RagPipelineSim() {
@@ -77,7 +80,7 @@ export function RagPipelineSim() {
               d.stage = "store";
               d.topic = TOPICS[2];
               d.progress = 0;
-              d.vector = randVector();
+              d.vector = vectorForDocument(d.id);
             }
             advancing.push(d);
           } else if (d.stage === "store") {

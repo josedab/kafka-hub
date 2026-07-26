@@ -51,9 +51,9 @@ export function LlmPanel({ response }: { response: LlmResponse }) {
           </span>
         </div>
         <p className="mt-1 text-xs opacity-80">
-          Set <code className="font-mono">ANTHROPIC_API_KEY</code> in the
-          environment to enable free-form recommendations on top of the static
-          rule engine.
+          Set <code className="font-mono">ANTHROPIC_API_KEY</code> and{" "}
+          <code className="font-mono">ANTHROPIC_MODEL</code> in the environment
+          to enable free-form recommendations on top of the static rule engine.
         </p>
       </div>
     );

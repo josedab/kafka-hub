@@ -41,6 +41,7 @@ import { ConfigInput } from "./components/config-input";
 import { FixComposer } from "./components/fix-composer";
 
 const HISTORY_LIMIT = 5;
+const LLM_CLIENT_TIMEOUT_MS = 28_000;
 
 interface Props {
   sample: string;
@@ -259,6 +260,11 @@ export function DiagnoseClient({ sample }: Props) {
       rememberRun(config);
       setLlmLoading(true);
       setLlmResponse(null);
+      const controller = new AbortController();
+      const timeoutId = window.setTimeout(
+        () => controller.abort(),
+        LLM_CLIENT_TIMEOUT_MS,
+      );
       try {
         // Apply common-pattern redaction before LLM egress.
         const { payload: redacted, report: redactReport } = prepareForLlm(config);
@@ -267,6 +273,7 @@ export function DiagnoseClient({ sample }: Props) {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ config: redacted }),
+          signal: controller.signal,
         });
         const json = (await res.json()) as LlmResponse;
         json.redacted = redactReport.count > 0;
@@ -277,9 +284,17 @@ export function DiagnoseClient({ sample }: Props) {
           configured: false,
           cached: false,
           findings: [],
-          error: err instanceof Error ? err.message : "Request failed",
+          error:
+            controller.signal.aborted &&
+            err instanceof Error &&
+            err.name === "AbortError"
+              ? "LLM request timed out. Try again."
+              : err instanceof Error
+                ? err.message
+                : "Request failed",
         });
       } finally {
+        window.clearTimeout(timeoutId);
         setLlmLoading(false);
       }
     },

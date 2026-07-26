@@ -40,6 +40,7 @@ const ROOT_EXCLUDED_PREFIXES = [
 ];
 const EXPECTED_ROOT_LOGIC = [
   "app/api/diagnose/llm/route.ts",
+  "app/api/health/route.ts",
   "lib/canonical-origin.ts",
   "lib/json-ld.ts",
   "lib/lru-cache.ts",
@@ -86,7 +87,11 @@ const suites = [
     branches: 70,
     functions: 85,
     include: rootCoverageFiles,
-    tests: ["lib/*.test.ts", "app/api/diagnose/llm/route.test.ts"],
+    tests: [
+      "lib/*.test.ts",
+      "app/api/diagnose/llm/route.test.ts",
+      "app/api/health/route.test.ts",
+    ],
   },
   {
     name: "kafka-diagnose",

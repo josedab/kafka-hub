@@ -21,6 +21,13 @@ updates:
         update-types:
           - minor
           - patch
+    ignore:
+      # TypeScript 7.x is an early-preview native rewrite (Corsa) and is not
+      # yet compatible with our Next.js/tooling stack. Stay on the 5.x line
+      # until the ecosystem catches up.
+      - dependency-name: "typescript"
+        update-types:
+          - "version-update:semver-major"
 
   - package-ecosystem: github-actions
     directory: /

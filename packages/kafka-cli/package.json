@@ -23,8 +23,8 @@
   },
   "devDependencies": {
     "@kafka-hub/kafka-diagnose": "workspace:*",
-    "esbuild": "^0.28.1",
-    "tsx": "^4.23.1"
+    "esbuild": "^0.28.2",
+    "tsx": "^4.23.12"
   },
   "keywords": [
     "kafka",

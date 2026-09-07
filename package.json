@@ -23,22 +23,22 @@
     "test:browser": "playwright test"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.115.0",
+    "@anthropic-ai/sdk": "^0.123.0",
     "@kafka-hub/incident-parser": "workspace:*",
     "@kafka-hub/kafka-diagnose": "workspace:*",
     "@kafka-hub/kafka-planners": "workspace:*",
     "@kafka-hub/kafka-sim": "workspace:*",
     "@types/mdx": "^2.0.14",
     "clsx": "^2.1.1",
-    "fumadocs-core": "^16.13.0",
-    "fumadocs-mdx": "^15.2.0",
-    "fumadocs-ui": "^16.13.0",
-    "lucide-react": "^1.27.0",
-    "next": "16.2.12",
+    "fumadocs-core": "^16.15.6",
+    "fumadocs-mdx": "^15.4.0",
+    "fumadocs-ui": "^16.15.6",
+    "lucide-react": "^1.40.0",
+    "next": "16.3.4",
     "react": "19.2.8",
     "react-dom": "19.2.8",
     "tailwind-merge": "^3.6.0",
-    "zod": "^4.4.3"
+    "zod": "^4.5.4"
   },
   "devDependencies": {
     "@playwright/test": "^1.62.0",
